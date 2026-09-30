@@ -1,0 +1,17 @@
+node_modules
+dist
+
+# Local configuration and secrets — never commit. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+# Downloaded datasets, model weights and the built index — regenerate with npm run ingest
+data/
+
+.claude/
+claude.md
+CLAUDE.md
+
+**/CLAUDE.md
+**/claude.md

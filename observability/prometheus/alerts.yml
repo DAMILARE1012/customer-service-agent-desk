@@ -1,0 +1,83 @@
+groups:
+  - name: support-api
+    rules:
+      - alert: SupportApiDown
+        expr: up{job="support-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Support API is not responding to scrapes
+          description: Prometheus has not reached /metrics for 2 minutes. Customers get no bot replies.
+
+      - alert: AssistantUnavailable
+        expr: increase(handoffs_total{reason="assistant_unavailable"}[10m]) > 3
+        labels: { severity: critical }
+        annotations:
+          summary: The LLM is failing — the bot is handing off questions it could answer
+          description: '{{ $value | humanize }} handoffs in 10 minutes because the model call failed. Check Groq status, the API key and rate limits.'
+
+      - alert: LlmRateLimited
+        expr: increase(llm_requests_total{status="rate_limited"}[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Groq is rate-limiting {{ $labels.model }} ({{ $labels.purpose }})'
+          description: Requests are failing with 429 even after retries. Consider lowering the online-eval sample rate or upgrading the plan.
+
+      - alert: LlmLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(llm_request_duration_seconds_bucket{purpose="answer"}[5m]))) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Answer generation p95 latency is {{ $value | humanizeDuration }}'
+
+  - name: handoff
+    rules:
+      - alert: HandoffSlaBreached
+        expr: handoff_sla_breaches > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $value }} customer(s) waiting longer than the handoff SLA'
+
+      - alert: HandoffQueueStuck
+        expr: handoff_queue_oldest_wait_seconds > 900
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'A customer has waited {{ $value | humanizeDuration }} for an agent'
+
+      - alert: HandoffRateSpike
+        expr: |
+          (
+            sum(increase(rag_bot_turns_total{outcome="handed_off"}[30m]))
+            / sum(increase(rag_bot_turns_total{outcome!="small_talk"}[30m]))
+          ) > 0.5
+          and sum(increase(rag_bot_turns_total[30m])) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'The bot is handing off {{ $value | humanizePercentage }} of questions'
+          description: Check handoffs by reason — a new topic missing from the knowledge base, a bad deploy, or an LLM problem.
+
+  - name: quality
+    rules:
+      - alert: FaithfulnessDropped
+        expr: |
+          (
+            sum(rate(online_eval_score_sum{metric="faithfulness"}[1h]))
+            / sum(rate(online_eval_score_count{metric="faithfulness"}[1h]))
+          ) < 0.8
+          and sum(increase(online_eval_score_count{metric="faithfulness"}[1h])) >= 5
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Live answers are {{ $value | humanizePercentage }} supported by their sources (1h average)'
+          description: The judge found unsupported claims in sampled answers. Review the low-scoring traces in Langfuse.
+
+      - alert: KnowledgeIndexStale
+        expr: time() - knowledge_source_last_checked_timestamp_seconds > 8 * 24 * 3600
+        labels: { severity: warning }
+        annotations:
+          summary: 'Knowledge source "{{ $labels.source }}" has not been checked for changes in over 8 days'
+          description: Schedule `npm run ingest` (for example daily) so policy and help-centre changes reach the bot.
