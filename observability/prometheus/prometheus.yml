@@ -7,7 +7,7 @@ rule_files:
 
 scrape_configs:
   # The support API (npm run server) on the host machine.
-  - job_name: support-api
+  - job_name: baton-api
     metrics_path: /metrics
     static_configs:
       - targets: ['host.docker.internal:8787']

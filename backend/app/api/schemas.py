@@ -1,0 +1,315 @@
+"""The API contract with the React desk. FastAPI validates every response against these models and
+publishes them as OpenAPI (GET /docs, /openapi.json). Wire format is camelCase; Python uses snake_case."""
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
+
+from app.conversation.constants import BotReplyKind, HandoffReason, HandoffStatus, Priority, Sender, Status, SystemEvent
+
+
+class Model(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
+
+
+# ── Building blocks ──────────────────────────────────────────────────────────
+
+
+class Person(Model):
+    id: str
+    name: str
+
+
+class Customer(Person):
+    email: str
+    tier: str
+    location: str
+    customer_since: str
+    lifetime_value: float
+    order_count: int
+    previous_conversations: int
+
+
+class Source(Model):
+    id: str
+    title: str
+    url: str
+    category: str
+    snippet: str
+    score: float = Field(description="Cosine similarity of this chunk to the question")
+    doc_id: str | None = None
+    cited_in_message_id: str | None = None
+
+
+class MessageMeta(Model):
+    kind: BotReplyKind
+    confidence: float | None
+    sources: list[Source]
+    trace_id: str | None = Field(None, description="Langfuse trace of the turn that produced this reply")
+
+
+class MessageEvent(Model):
+    type: SystemEvent
+    reason: HandoffReason | None = None
+    agent_id: str | None = None
+    agent_name: str | None = None
+
+
+class Message(Model):
+    id: str
+    sender: Sender
+    text: str
+    created_at: int = Field(description="Epoch milliseconds")
+    meta: MessageMeta | None = None
+    event: MessageEvent | None = None
+    author: Person | None = None
+
+
+class Entity(Model):
+    type: str
+    label: str
+    value: str
+    message_id: str
+
+
+class Attempt(Model):
+    question_message_id: str
+    reply_message_id: str | None
+    question: str
+    outcome: str = Field(description="answered | clarified | handed_off")
+    confidence: float
+    source_id: str | None
+    source_title: str | None
+    at: int
+
+
+class Intent(Model):
+    label: str
+    confidence: float
+
+
+class Signal(Model):
+    reason: HandoffReason
+    detail: str
+    topic: str | None = None
+
+
+class SentimentState(Model):
+    current: float
+    trend: list[float]
+
+
+class HandoffSentiment(SentimentState):
+    label: str
+
+
+class TriggerMessage(Model):
+    id: str
+    text: str
+
+
+class Procedure(Model):
+    title: str
+    url: str
+    similarity: float
+
+
+class Handoff(Model):
+    """The brief the agent receives: everything the bot knew when it stepped aside."""
+
+    id: str
+    status: HandoffStatus
+    reason: HandoffReason
+    reason_label: str
+    reason_detail: str
+    signals: list[Signal]
+    priority: Priority
+    requested_at: int
+    accepted_at: int | None
+    accepted_by: Person | None
+    trigger_message: TriggerMessage | None
+    summary: str
+    intent: Intent | None
+    entities: list[Entity]
+    bot_attempts: list[Attempt]
+    open_questions: list[str]
+    sources: list[Source]
+    sentiment: HandoffSentiment
+    suggested_next_steps: list[str]
+    procedure: Procedure | None = None
+    returned_at: int | None = None
+
+
+class Insights(Model):
+    intent: Intent | None
+    last_confidence: float | None
+    sentiment: SentimentState
+    entities: list[Entity]
+    attempts: list[Attempt]
+    failed_attempts: int
+
+
+class Copilot(Model):
+    text: str
+    based_on: str
+    confidence: float
+    sources: list[Source]
+
+
+class Conversation(Model):
+    id: str
+    customer: Customer
+    status: Status
+    assignee: Person | None
+    subject: str | None
+    created_at: int
+    updated_at: int
+    messages: list[Message]
+    insights: Insights
+    handoff: Handoff | None
+    handoff_history: list[Handoff]
+    copilot: Copilot | None
+
+
+class SummaryCustomer(Model):
+    id: str
+    name: str
+    tier: str
+
+
+class LastMessage(Model):
+    sender: Sender
+    text: str
+    created_at: int
+
+
+class SummaryHandoff(Model):
+    reason: HandoffReason
+    priority: Priority
+    requested_at: int
+    accepted_at: int | None
+
+
+class ConversationSummary(Model):
+    id: str
+    status: Status
+    assignee: Person | None
+    subject: str | None
+    created_at: int
+    updated_at: int
+    customer: SummaryCustomer
+    last_message: LastMessage | None
+    handoff: SummaryHandoff | None
+    sentiment: float
+    last_confidence: float | None
+
+
+# ── Who's signed in ──────────────────────────────────────────────────────────
+
+
+class Agent(Person):
+    email: str | None
+    capacity: int
+    active: bool
+
+
+class Admin(Person):
+    email: str | None
+
+
+class User(Model):
+    sub: str = Field(description="Keycloak user id")
+    username: str
+    name: str
+    email: str | None
+    roles: list[str]
+
+
+class Me(Model):
+    user: User
+    customer: Customer | None = None
+    agent: Agent | None = None
+    admin: Admin | None = None
+
+
+# ── The customer's view (no handoff brief, scores or internal notes) ─────────
+
+
+class CustomerSource(Model):
+    title: str
+    url: str
+
+
+class CustomerAuthor(Model):
+    name: str
+
+
+class CustomerMessageView(Model):
+    id: str
+    sender: Sender
+    text: str
+    created_at: int
+    author: CustomerAuthor | None = None
+    sources: list[CustomerSource] = []
+
+
+class CustomerConversation(Model):
+    id: str
+    status: Status
+    subject: str | None
+    created_at: int
+    updated_at: int
+    agent: CustomerAuthor | None
+    messages: list[CustomerMessageView]
+
+
+class CustomerConversationSummary(Model):
+    id: str
+    status: Status
+    subject: str | None
+    created_at: int
+    updated_at: int
+    last_message: LastMessage | None
+
+
+# ── Admin ────────────────────────────────────────────────────────────────────
+
+
+class AgentOverview(Agent):
+    active_chats: int
+    last_seen_at: str | None = None
+    signed_in_once: bool = Field(description="Whether the Keycloak user has claimed this profile yet")
+
+
+class AgentUpdate(Model):
+    capacity: int | None = Field(None, ge=1, le=20)
+    active: bool | None = None
+
+
+class PolicyField(Model):
+    min: float
+    max: float
+    integer: bool
+    help: str
+
+
+class Policy(Model):
+    values: dict[str, int | float]
+    defaults: dict[str, int | float]
+    fields: dict[str, PolicyField]
+    updated_at: str | None
+    updated_by: str | None
+
+
+# ── Requests ─────────────────────────────────────────────────────────────────
+
+
+class CustomerMessage(Model):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class AgentMessage(Model):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class ErrorResponse(Model):
+    message: str

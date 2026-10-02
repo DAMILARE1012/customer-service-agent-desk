@@ -1,0 +1,5 @@
+[flake8]
+# Match ruff's settings in pyproject.toml so the editor and the linter agree.
+max-line-length = 120
+extend-ignore = E203, E501
+exclude = .venv

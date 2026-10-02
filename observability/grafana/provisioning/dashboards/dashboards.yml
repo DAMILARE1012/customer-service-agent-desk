@@ -1,7 +1,7 @@
 apiVersion: 1
 providers:
-  - name: support-desk
-    folder: Support desk
+  - name: baton
+    folder: Baton
     type: file
     disableDeletion: true
     options:

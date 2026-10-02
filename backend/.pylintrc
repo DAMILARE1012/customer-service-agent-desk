@@ -1,0 +1,13 @@
+# For editors that run pylint. The project's linter is ruff (pyproject.toml); keep the two in agreement.
+[FORMAT]
+max-line-length = 120
+
+[MESSAGES CONTROL]
+disable =
+    line-too-long,              # ruff/formatter's job
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring, # names and type hints document most functions; docstrings where they add something
+    import-outside-toplevel,    # deliberate: heavy imports (torch, langfuse) load lazily
+    too-few-public-methods,
+    redefined-outer-name,       # pytest fixtures

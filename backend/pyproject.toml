@@ -1,0 +1,63 @@
+[project]
+name = "baton-backend"
+version = "0.2.0"
+description = "Baton — customer-service RAG assistant that knows when to pass the baton to a human. FastAPI backend."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "numpy>=2.0",
+    "tokenizers>=0.20",
+    "sentence-transformers>=3.0",
+    "beautifulsoup4>=4.12",
+    "prometheus-client>=0.20",
+    "psutil>=6.0",
+    "langfuse>=3.0",
+    "psycopg[binary,pool]>=3.2",
+    "pyjwt[crypto]>=2.9",
+]
+
+[project.scripts]
+baton-api = "app.api.main:run"
+baton-ingest = "app.ingest.cli:main"
+baton-search = "app.rag.cli:main"
+baton-eval = "app.eval.retrieval_cli:main"
+baton-eval-rag = "app.eval.rag_cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+
+# CPU-only PyTorch on Linux (Docker): the default wheel bundles ~2 GB of CUDA libraries we don't use.
+# Windows and macOS wheels from PyPI are already CPU-only.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # line-length is the formatter's job; same as .flake8
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Query"]

@@ -1,0 +1,5 @@
+{
+  "flake8.args": ["--config=${workspaceFolder}/backend/.flake8"],
+  "pylint.args": ["--rcfile=${workspaceFolder}/backend/.pylintrc"],
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe"
+}

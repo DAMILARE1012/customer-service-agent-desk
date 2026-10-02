@@ -10,7 +10,7 @@
 # Based on Langfuse's official docker-compose.yml (single VM, no HA or backups — fine for local use).
 # All ports bind to 127.0.0.1; internal services (Postgres, ClickHouse, Redis) aren't exposed at all.
 
-name: support-observability
+name: baton-observability
 
 x-langfuse-env: &langfuse-env
   NEXTAUTH_URL: http://localhost:3000
@@ -71,9 +71,9 @@ services:
       # Headless setup: the org, project, API keys and first user are created on first start,
       # using the same keys the backend reads — no clicking through the UI.
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:?set in .env}
-      LANGFUSE_INIT_ORG_NAME: Support desk
+      LANGFUSE_INIT_ORG_NAME: Baton
       LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:?set in .env}
-      LANGFUSE_INIT_PROJECT_NAME: Support bot
+      LANGFUSE_INIT_PROJECT_NAME: Baton assistant
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set in .env}
       LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set in .env}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?set in .env}
@@ -167,7 +167,7 @@ services:
     volumes:
       - ./prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
-    # Lets Prometheus reach the support API running on the host (npm run server).
+    # Lets Prometheus reach the Baton API running on the host (npm run api).
     extra_hosts:
       - host.docker.internal:host-gateway
 
@@ -183,17 +183,18 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/support-desk.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/baton.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
 
+# Explicit names keep the data created before the project was renamed to Baton.
 volumes:
-  langfuse_postgres:
-  langfuse_clickhouse:
-  langfuse_clickhouse_logs:
-  langfuse_minio:
-  langfuse_redis:
-  prometheus_data:
-  grafana_data:
+  langfuse_postgres: { name: support-observability_langfuse_postgres }
+  langfuse_clickhouse: { name: support-observability_langfuse_clickhouse }
+  langfuse_clickhouse_logs: { name: support-observability_langfuse_clickhouse_logs }
+  langfuse_minio: { name: support-observability_langfuse_minio }
+  langfuse_redis: { name: support-observability_langfuse_redis }
+  prometheus_data: { name: support-observability_prometheus_data }
+  grafana_data: { name: support-observability_grafana_data }

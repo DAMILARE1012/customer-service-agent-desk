@@ -1,8 +1,8 @@
 groups:
-  - name: support-api
+  - name: baton-api
     rules:
       - alert: SupportApiDown
-        expr: up{job="support-api"} == 0
+        expr: up{job="baton-api"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
