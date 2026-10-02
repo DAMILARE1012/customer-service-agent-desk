@@ -17,7 +17,10 @@ const EVENT_STYLE = {
 /** Lifecycle markers in the transcript. Handoffs are events in the story, not errors. */
 export function SystemEvent({ message }) {
   const dispatch = useDispatch();
-  const style = EVENT_STYLE[message.event?.type] ?? EVENT_STYLE[SYSTEM_EVENT.REOPENED];
+  const abandoned = message.event?.closedReason === 'abandoned';
+  const style = abandoned
+    ? { icon: 'warning', className: 'bg-amber-50 text-amber-800 ring-amber-200' }
+    : (EVENT_STYLE[message.event?.type] ?? EVENT_STYLE[SYSTEM_EVENT.REOPENED]);
   const isHandoff = message.event?.type === SYSTEM_EVENT.HANDOFF_REQUESTED;
   const reasonIcon = isHandoff ? HANDOFF_REASON_META[message.event.reason]?.icon : style.icon;
 

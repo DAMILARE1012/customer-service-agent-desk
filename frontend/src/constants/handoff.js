@@ -69,6 +69,7 @@ export const HANDOFF_STATUS = Object.freeze({
   PENDING: 'pending',
   ACCEPTED: 'accepted',
   RETURNED: 'returned',
+  ABANDONED: 'abandoned', // the customer left before an agent picked it up
 });
 
 export const PRIORITY = Object.freeze({

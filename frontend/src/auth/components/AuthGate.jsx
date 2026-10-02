@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { config } from '../../config.js';
-import { AUTH_MODE, authFailed, selectAuthError, selectAuthStatus, signedIn, signedOut } from '../authSlice.js';
+import { AUTH_MODE, authFailed, selectAuthError, selectAuthStatus, selectUser, signedIn, signedOut } from '../authSlice.js';
 import { loadDemoPersona } from '../demoPersonas.js';
 import { initKeycloak } from '../keycloak.js';
 import { DemoSignIn } from './DemoSignIn.jsx';
@@ -12,6 +12,7 @@ export function AuthGate({ children }) {
   const dispatch = useDispatch();
   const status = useSelector(selectAuthStatus);
   const error = useSelector(selectAuthError);
+  const user = useSelector(selectUser);
 
   useEffect(() => {
     if (AUTH_MODE === 'demo') {
@@ -28,7 +29,9 @@ export function AuthGate({ children }) {
       .catch((e) => dispatch(authFailed(`Couldn’t reach sign-in at ${config.auth.keycloakUrl}. Is Keycloak running (npm run infra:up)? ${e?.message ?? ''}`)));
   }, [dispatch]);
 
-  if (status === 'loading') return <FullScreenMessage title="Signing you in…" busy />;
+  // Coming from the demo shop, the store still holds the widget's customer for a moment: wait for the staff persona.
+  const customerFromWidget = AUTH_MODE === 'demo' && status === 'signedIn' && user?.roles.length === 1 && user.roles[0] === 'customer';
+  if (status === 'loading' || customerFromWidget) return <FullScreenMessage title="Signing you in…" busy />;
   if (status === 'error') {
     return (
       <FullScreenMessage title="Sign-in isn’t available" description={error}>

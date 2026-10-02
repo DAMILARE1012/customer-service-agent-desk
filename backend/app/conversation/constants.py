@@ -30,8 +30,8 @@ class SystemEvent(StrEnum):
     AGENT_JOINED = "agent_joined"
     AGENT_TOOK_OVER = "agent_took_over"
     RETURNED_TO_BOT = "returned_to_bot"
-    RESOLVED = "resolved"
-    REOPENED = "reopened"
+    RESOLVED = "resolved"  # any close; the event's closedReason says why
+    REOPENED = "reopened"  # legacy: closed conversations no longer reopen
 
 
 class BotReplyKind(StrEnum):
@@ -86,6 +86,26 @@ class HandoffStatus(StrEnum):
     PENDING = "pending"
     ACCEPTED = "accepted"
     RETURNED = "returned"
+    ABANDONED = "abandoned"  # the customer left before an agent picked it up
+
+
+class ClosedReason(StrEnum):
+    """Why a conversation (a support session) ended. Closed conversations never reopen: the customer
+    starts a new one, optionally as a follow-up linked to this one."""
+
+    RESOLVED = "resolved"  # an agent resolved it
+    ENDED_BY_CUSTOMER = "ended_by_customer"
+    INACTIVE = "inactive"  # nobody wrote for SESSION_IDLE_MINUTES
+    ABANDONED = "abandoned"  # the customer left while waiting for an agent
+
+
+# The agent-facing note added to the transcript when a session closes.
+CLOSED_NOTE = {
+    ClosedReason.RESOLVED: "Resolved by {actor}",
+    ClosedReason.ENDED_BY_CUSTOMER: "The customer ended the chat",
+    ClosedReason.INACTIVE: "Closed after {minutes} minutes without activity",
+    ClosedReason.ABANDONED: "The customer left before an agent joined",
+}
 
 
 class Priority(StrEnum):

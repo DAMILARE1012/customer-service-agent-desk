@@ -1,5 +1,5 @@
 import { BatonMark } from '../../../components/brand/Brand.jsx';
-import { Avatar, Icon } from '../../../components/ui/index.js';
+import { Avatar, Icon, MessageText } from '../../../components/ui/index.js';
 import { SENDER } from '../../../constants/conversation.js';
 import { formatClock } from '../../../utils/format.js';
 
@@ -55,7 +55,7 @@ export function ChatMessage({ message }) {
           <span>· {formatClock(message.createdAt)}</span>
         </p>
         <div className={`rounded-2xl rounded-tl-md px-4 py-2.5 text-sm whitespace-pre-line text-slate-800 shadow-sm ring-1 ${fromAgent ? 'bg-indigo-50 ring-indigo-100' : 'bg-white ring-slate-200'}`}>
-          {message.text}
+          <MessageText text={message.text} />
         </div>
         <Sources sources={message.sources} />
       </div>

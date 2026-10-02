@@ -21,7 +21,7 @@ export function CustomerProfile({ customer }) {
           <Avatar name={customer.name} size="lg" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-slate-900">{customer.name}</p>
-            <p className="truncate text-xs text-slate-500">{customer.email}</p>
+            <p className="truncate text-xs text-slate-500">{customer.isVisitor ? 'Website visitor — not signed in to your site' : customer.email}</p>
             <p className="text-xs text-slate-500">{customer.location}</p>
           </div>
           <Badge tone={tier.tone} className="ml-auto">{tier.label}</Badge>
@@ -32,7 +32,7 @@ export function CustomerProfile({ customer }) {
           <Stat label="Customer since" value={formatDate(customer.customerSince)} />
           <Stat label="Lifetime value" value={formatCurrency(customer.lifetimeValue)} />
           <Stat label="Orders" value={customer.orderCount} />
-          <Stat label="Past conversations" value={customer.previousConversations} />
+          <Stat label="Tier" value={tier.label} />
         </dl>
       </Section>
     </>

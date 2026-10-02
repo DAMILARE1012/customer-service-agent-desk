@@ -4,7 +4,7 @@
   "displayNameHtml": "<strong>Baton</strong>",
   "enabled": true,
   "sslRequired": "external",
-  "registrationAllowed": true,
+  "registrationAllowed": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
   "rememberMe": true,
@@ -15,8 +15,14 @@
   "roles": {
     "realm": [
       {
-        "name": "customer",
-        "description": "Chats with the Baton assistant and sees only their own conversations."
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}",
+        "composite": false
+      },
+      {
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false
       },
       {
         "name": "agent",
@@ -25,6 +31,23 @@
       {
         "name": "admin",
         "description": "Manages agents and handoff policy; sees every conversation and insights."
+      },
+      {
+        "name": "default-roles-baton",
+        "description": "Roles every new account gets (staff accounts are created by an admin).",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "offline_access",
+            "uma_authorization"
+          ],
+          "client": {
+            "account": [
+              "view-profile",
+              "manage-account"
+            ]
+          }
+        }
       }
     ]
   },
@@ -35,8 +58,7 @@
     "composites": {
       "realm": [
         "offline_access",
-        "uma_authorization",
-        "customer"
+        "uma_authorization"
       ]
     }
   },
@@ -44,7 +66,7 @@
     {
       "clientId": "baton-web",
       "name": "Baton web app",
-      "description": "The React app (customer chat, agent desk, admin). Public client: authorization code + PKCE.",
+      "description": "The staff web app (agent desk, admin). Public client: authorization code + PKCE. Customers never sign in — they use the chat widget.",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
@@ -89,161 +111,22 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "baton-api-admin",
+      "name": "Baton API (user administration)",
+      "description": "Service account the API uses for one thing: deleting a person's account when an admin erases their data.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${BATON_API_ADMIN_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false
     }
   ],
   "users": [
-    {
-      "username": "maya.chen",
-      "email": "maya.chen@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Maya",
-      "lastName": "Chen",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "jordan.okafor",
-      "email": "jordan@okafor-studio.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Jordan",
-      "lastName": "Okafor",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "sam.patel",
-      "email": "sam.patel@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Sam",
-      "lastName": "Patel",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "lena.fischer",
-      "email": "lena.f@example.de",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Lena",
-      "lastName": "Fischer",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "chris.morgan",
-      "email": "chris.morgan@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Chris",
-      "lastName": "Morgan",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "tom.reyes",
-      "email": "tom.reyes@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Tom",
-      "lastName": "Reyes",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "aisha.bello",
-      "email": "aisha.bello@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Aisha",
-      "lastName": "Bello",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
-    {
-      "username": "noah.williams",
-      "email": "noah.w@example.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Noah",
-      "lastName": "Williams",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "${BATON_DEMO_PASSWORD}",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "default-roles-baton",
-        "customer"
-      ]
-    },
     {
       "username": "alex.rivera",
       "email": "alex.rivera@baton.example",
@@ -301,6 +184,17 @@
         "admin",
         "agent"
       ]
+    },
+    {
+      "username": "service-account-baton-api-admin",
+      "enabled": true,
+      "serviceAccountClientId": "baton-api-admin",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "manage-users"
+        ]
+      }
     }
   ]
 }

@@ -32,10 +32,12 @@ export function findConversation(id) {
 /** The profile row for a signed-in persona, created on first use (like the API's first sign-in). */
 export function profileFor(kind, user) {
   const table = db[`${kind}s`];
-  let row = table.find((p) => p.email === user.email);
+  const prefix = { customer: 'cus', agent: 'agt', admin: 'adm' }[kind];
+  const id = `${prefix}_${user.sub}`;
+  // Seeded people are matched by email (like a signed-in customer claiming a CRM profile); visitors by id.
+  let row = table.find((p) => (user.email ? p.email === user.email : p.id === id));
   if (!row) {
-    const prefix = { customer: 'cus', agent: 'agt', admin: 'adm' }[kind];
-    row = { id: `${prefix}_${user.sub}`, name: user.name, email: user.email };
+    row = { id, name: user.name, email: user.email, ...(user.visitor && { isVisitor: true }) };
     if (kind === 'customer') Object.assign(row, { tier: 'standard', location: '', customerSince: new Date().toISOString().slice(0, 10), lifetimeValue: 0, orderCount: 0, previousConversations: 0 });
     if (kind === 'agent') Object.assign(row, { capacity: 3, active: true });
     table.push(row);
@@ -56,6 +58,8 @@ function seed() {
       if (action === 'agent') engine.postAgentMessage(conversation, findAgent(args[0]), args[1], now);
       if (action === 'resolve') engine.resolveConversation(conversation, null, now);
     }
+    // Seeds are backdated demo data with simulated customers: the idle sweep leaves them alone.
+    conversation.demoSeed = true;
     db.conversations.set(conversation.id, conversation);
   }
 }

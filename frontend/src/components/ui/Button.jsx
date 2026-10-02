@@ -6,6 +6,8 @@ const VARIANTS = {
   success: 'bg-emerald-600 text-white hover:bg-emerald-500 focus-visible:outline-emerald-600 shadow-sm',
   secondary: 'bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50 shadow-sm',
   ghost: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
+  danger: 'bg-rose-600 text-white hover:bg-rose-500 focus-visible:outline-rose-600 shadow-sm',
+  dangerGhost: 'text-rose-600 hover:bg-rose-50 hover:text-rose-700',
 };
 
 const SIZES = {

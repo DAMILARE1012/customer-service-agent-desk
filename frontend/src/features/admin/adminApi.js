@@ -32,6 +32,39 @@ export const adminApi = baseApi.injectEndpoints({
       query: (params = {}) => ({ url: '/admin/conversations', params: Object.fromEntries(Object.entries(params).filter(([, v]) => v)) }),
       providesTags: [{ type: TAG.CONVERSATION, id: LIST_ID }],
     }),
+    getCustomersAdmin: build.query({
+      query: () => '/admin/customers',
+      providesTags: [{ type: TAG.CUSTOMER, id: LIST_ID }],
+    }),
+    eraseCustomer: build.mutation({
+      query: (customerId) => ({ url: `/admin/customers/${customerId}/erase`, method: 'POST', body: { confirm: customerId } }),
+      invalidatesTags: [{ type: TAG.CUSTOMER, id: LIST_ID }, { type: TAG.CONVERSATION, id: LIST_ID }, { type: TAG.INSIGHTS, id: LIST_ID }, TAG.AUDIT],
+    }),
+    getReviewItems: build.query({
+      query: (params = {}) => ({ url: '/admin/review', params }),
+      providesTags: [TAG.REVIEW],
+    }),
+    runReview: build.mutation({
+      query: () => ({ url: '/admin/review/run', method: 'POST' }),
+      invalidatesTags: [TAG.REVIEW, TAG.AUDIT],
+    }),
+    updateReviewItem: build.mutation({
+      query: ({ id, ...changes }) => ({ url: `/admin/review/${id}`, method: 'PATCH', body: changes }),
+      invalidatesTags: [TAG.REVIEW],
+    }),
+    reviewAction: build.mutation({
+      // action: publish | approve | reject
+      query: ({ id, action }) => ({ url: `/admin/review/${id}/${action}`, method: 'POST' }),
+      invalidatesTags: [TAG.REVIEW, TAG.AUDIT],
+    }),
+    reindexKnowledge: build.mutation({
+      query: () => ({ url: '/admin/knowledge/reindex', method: 'POST' }),
+      invalidatesTags: [TAG.AUDIT],
+    }),
+    getAudit: build.query({
+      query: (params = {}) => ({ url: '/admin/audit', params: Object.fromEntries(Object.entries(params).filter(([, v]) => v)) }),
+      providesTags: [TAG.AUDIT],
+    }),
     getPolicy: build.query({
       query: () => '/admin/policy',
       providesTags: [TAG.POLICY],
@@ -48,6 +81,14 @@ export const adminApi = baseApi.injectEndpoints({
 });
 
 export const {
+  useGetCustomersAdminQuery,
+  useEraseCustomerMutation,
+  useGetReviewItemsQuery,
+  useRunReviewMutation,
+  useUpdateReviewItemMutation,
+  useReviewActionMutation,
+  useReindexKnowledgeMutation,
+  useGetAuditQuery,
   useGetInsightsQuery,
   useGetAgentsQuery,
   useUpdateAgentMutation,

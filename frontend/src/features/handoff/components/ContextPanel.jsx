@@ -2,6 +2,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { EmptyState, Tabs } from '../../../components/ui/index.js';
 import { CONVERSATION_STATUS } from '../../../constants/conversation.js';
 import { CustomerProfile } from '../../customer/components/CustomerProfile.jsx';
+import { CustomerTimeline } from '../../customer/components/CustomerTimeline.jsx';
 import { useGetConversationQuery } from '../../conversations/conversationsApi.js';
 import { contextTabChanged, selectContextTab, selectSelectedConversationId } from '../../conversations/deskSlice.js';
 import { HandoffBrief } from './HandoffBrief.jsx';
@@ -42,7 +43,10 @@ export function ContextPanel() {
         ) : tab === 'knowledge' ? (
           <KnowledgeSources conversation={conversation} />
         ) : (
-          <CustomerProfile customer={conversation.customer} />
+          <>
+            <CustomerProfile customer={conversation.customer} />
+            <CustomerTimeline customerId={conversation.customer.id} currentId={conversation.id} />
+          </>
         )}
       </div>
     </aside>

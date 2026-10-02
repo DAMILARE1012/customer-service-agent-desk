@@ -52,6 +52,25 @@ class Settings(BaseSettings):
     server_port: int = Field(8787, ge=1, le=65535)
     cors_origin: str = "*"
 
+    # ── Support sessions ───────────────────────────────────────────────────
+    session_idle_minutes: float = Field(30, gt=0)  # bot or agent chat with no new message → closed (inactive)
+    session_abandon_minutes: float = Field(10, gt=0)  # customer gone while waiting for an agent → closed (abandoned)
+    session_sweep_seconds: float = Field(60, ge=5)  # how often idle sessions are checked
+
+    # ── Data rules and the review pipeline ─────────────────────────────────
+    retention_days: int = Field(365, ge=0)  # closed transcripts are wiped after this; 0 keeps them forever
+    review_interval_minutes: float = Field(60, ge=0)  # how often closed sessions are reviewed; 0 = only on demand
+    privacy_notice: str = ""  # shown in the customer chat; empty = a notice built from RETENTION_DAYS
+
+    # ── Customer chat widget (customers never sign in to Baton) ────────────
+    widget_signing_secret: str = ""  # signs widget session tokens; the widget is off until this is set
+    widget_identity_secret: str = ""  # shared with your website's backend, which signs identity tokens for its signed-in customers
+    widget_demo_identity: bool = False  # local demo only: the API signs identity tokens for seeded customers
+    widget_visitor_days: int = Field(30, ge=1)  # an anonymous visitor's session (and chat history) lasts this long
+    widget_identified_hours: int = Field(12, ge=1)  # a signed-in customer's session; your site re-identifies them after
+    widget_messages_per_minute: int = Field(12, ge=1)  # per customer: protects the LLM budget from scripts
+    widget_sessions_per_hour: int = Field(30, ge=1)  # new widget sessions per client IP
+
     # ── Identity (Keycloak) and the app database ───────────────────────────
     keycloak_url: str = "http://localhost:8080"  # public URL: tokens' issuer, links for people
     keycloak_internal_url: str = ""  # how the API reaches Keycloak for signing keys; default keycloak_url
@@ -60,6 +79,9 @@ class Settings(BaseSettings):
     database_url: str = ""  # empty → in-memory store (tests, quick experiments)
     seed_demo_data: bool = True  # demo customer profiles and agents, matched to Keycloak users by email
     grafana_url: str = "http://localhost:3001"
+    # Service account (client credentials) the API uses to delete a person's Keycloak account on erasure.
+    keycloak_admin_client_id: str = "baton-api-admin"
+    keycloak_admin_client_secret: str = ""
     # Shared with the desk UI so metrics and the screen agree on what "overdue" means.
     vite_handoff_sla_warn_seconds: float = Field(120, ge=1)
     vite_handoff_sla_breach_seconds: float = Field(300, ge=1)

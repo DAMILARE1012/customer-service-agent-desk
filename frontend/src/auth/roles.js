@@ -1,4 +1,6 @@
-// The three kinds of people who use Baton, as Keycloak realm roles, and the workspace each one gets.
+// Who uses Baton. Staff sign in with Keycloak (realm roles agent, admin) and get a workspace here.
+// Customers never sign in: they chat through the website widget (features/widget), with the `customer`
+// role only on their widget session.
 
 export const ROLE = Object.freeze({
   CUSTOMER: 'customer',
@@ -12,8 +14,6 @@ export const isStaff = (user) => user.roles.includes(ROLE.AGENT) || user.roles.i
 export const WORKSPACES = [
   { id: 'desk', path: '/desk', label: 'Desk', icon: 'inbox', description: 'Handoff queue and conversations', allows: (u) => u.roles.includes(ROLE.AGENT) },
   { id: 'admin', path: '/admin', label: 'Admin', icon: 'sliders', description: 'Agents, policy and insights', allows: (u) => u.roles.includes(ROLE.ADMIN) },
-  // Staff accounts never chat as customers (the API refuses it too).
-  { id: 'chat', path: '/chat', label: 'Support chat', icon: 'chat', description: 'Get help from Baton', allows: (u) => u.roles.includes(ROLE.CUSTOMER) && !isStaff(u) },
 ];
 
 export const workspacesFor = (user) => WORKSPACES.filter((w) => w.allows(user));

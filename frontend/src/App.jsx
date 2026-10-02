@@ -7,10 +7,9 @@ import { FullScreenMessage } from './auth/components/FullScreenMessage.jsx';
 import { homePathFor, workspaceAt } from './auth/roles.js';
 import { useSession } from './auth/useSession.js';
 import { AdminPage } from './features/admin/components/AdminPage.jsx';
-import { ChatPage } from './features/chat/components/ChatPage.jsx';
 import { DeskLayout } from './layout/DeskLayout.jsx';
 
-const PAGES = { chat: ChatPage, desk: DeskLayout, admin: AdminPage };
+const PAGES = { desk: DeskLayout, admin: AdminPage };
 
 /** Route to the workspace for this path — if the signed-in roles allow it. */
 function Workspaces() {
@@ -26,7 +25,7 @@ function Workspaces() {
 
   if (home === '/no-access') {
     return (
-      <FullScreenMessage title="Your account has no Baton role yet" description="Ask an admin to give you the customer, agent or admin role in Keycloak, then sign in again.">
+      <FullScreenMessage title="This account has no Baton staff role" description="The staff app is for agents and admins — ask an admin to give you the agent or admin role in Keycloak. Customers chat through the widget on your website.">
         <button type="button" onClick={signOut} className="text-sm font-medium text-indigo-600 hover:text-indigo-500">Sign out</button>
       </FullScreenMessage>
     );

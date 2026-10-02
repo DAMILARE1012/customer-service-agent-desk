@@ -5,8 +5,7 @@ import json
 from collections import Counter
 
 from app.config import settings
-from app.conversation.constants import REASON_LABEL, Status
-from app.conversation.store import all_conversations
+from app.conversation.constants import REASON_LABEL, ClosedReason, Status
 
 
 def _latest(pattern: str) -> dict | None:
@@ -47,8 +46,8 @@ def _rag_report() -> dict | None:
     }  # fmt: skip
 
 
-def insights() -> dict:
-    conversations = all_conversations()
+def insights(conversations: list[dict]) -> dict:
+    """From conversation heads with their handoff history (no transcripts needed)."""
     by_status = Counter(c["status"] for c in conversations)
 
     reasons, waits, handed_off = Counter(), [], 0
@@ -65,8 +64,16 @@ def insights() -> dict:
     resolved = [c for c in conversations if c["status"] == Status.RESOLVED]
     resolved_by_bot = sum(1 for c in resolved if not c["handoffHistory"] and not c["handoff"])
 
+    closed_by = Counter(c.get("closedReason") for c in resolved)
     return {
         "conversations": {"total": len(conversations), "byStatus": {s.value: by_status.get(s, 0) for s in Status}},
+        "sessions": {
+            "closed": len(resolved),
+            "byClosedReason": {r.value: closed_by.get(r, 0) for r in ClosedReason},
+            # Of the customers who were handed to a person, how many left before anyone picked up.
+            "abandonmentRate": closed_by.get(ClosedReason.ABANDONED, 0) / handed_off if handed_off else None,
+            "followUps": sum(1 for c in conversations if c.get("followUpOf")),
+        },
         "handoffs": {
             "conversationsHandedOff": handed_off,
             "rate": handed_off / len(conversations) if conversations else None,

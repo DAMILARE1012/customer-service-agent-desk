@@ -12,12 +12,21 @@ export const chatApi = baseApi.injectEndpoints({
       query: (id) => `/me/conversations/${id}`,
       providesTags: (result, error, id) => [{ type: TAG.MY_CONVERSATION, id }],
     }),
+    // Starts a session — or returns the live one (a customer has at most one open at a time).
     startConversation: build.mutation({
-      query: () => ({ url: '/me/conversations', method: 'POST' }),
+      query: ({ followUpOf } = {}) => ({ url: '/me/conversations', method: 'POST', body: followUpOf ? { followUpOf } : {} }),
       async onQueryStarted(_, { dispatch, queryFulfilled }) {
         const { data } = await queryFulfilled;
         // Seed the cache so the first message can be shown optimistically right away.
         dispatch(chatApi.util.upsertQueryData('getMyConversation', data.id, data));
+      },
+      invalidatesTags: [{ type: TAG.MY_CONVERSATION, id: LIST_ID }],
+    }),
+    endConversation: build.mutation({
+      query: (conversationId) => ({ url: `/me/conversations/${conversationId}/end`, method: 'POST' }),
+      async onQueryStarted(conversationId, { dispatch, queryFulfilled }) {
+        const { data } = await queryFulfilled;
+        dispatch(chatApi.util.upsertQueryData('getMyConversation', conversationId, data));
       },
       invalidatesTags: [{ type: TAG.MY_CONVERSATION, id: LIST_ID }],
     }),
@@ -42,4 +51,10 @@ export const chatApi = baseApi.injectEndpoints({
   }),
 });
 
-export const { useGetMyConversationsQuery, useGetMyConversationQuery, useStartConversationMutation, useSendMessageMutation } = chatApi;
+export const {
+  useGetMyConversationsQuery,
+  useGetMyConversationQuery,
+  useStartConversationMutation,
+  useEndConversationMutation,
+  useSendMessageMutation,
+} = chatApi;

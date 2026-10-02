@@ -2,15 +2,21 @@ import { Link, pathSegments, usePath } from '../../../app/router.jsx';
 import { Icon } from '../../../components/ui/index.js';
 import { AppHeader } from '../../../layout/AppHeader.jsx';
 import { AgentsView } from './AgentsView.jsx';
+import { AuditView } from './AuditView.jsx';
 import { ConversationsView } from './ConversationsView.jsx';
+import { CustomersView } from './CustomersView.jsx';
 import { InsightsView } from './InsightsView.jsx';
 import { PolicyView } from './PolicyView.jsx';
+import { ReviewView } from './ReviewView.jsx';
 
 const SECTIONS = [
   { id: '', label: 'Overview', icon: 'chart', View: InsightsView, description: 'How the assistant and the desk are doing.' },
   { id: 'agents', label: 'Agents', icon: 'users', View: AgentsView, description: 'Who can take handoffs, and how many at once.' },
   { id: 'conversations', label: 'Conversations', icon: 'chat', View: ConversationsView, description: 'Every conversation, across all agents.' },
+  { id: 'review', label: 'Review', icon: 'sparkles', View: ReviewView, description: 'Learn from closed conversations: missing help-centre articles and new test questions, personal details removed.' },
+  { id: 'customers', label: 'Customers', icon: 'user', View: CustomersView, description: 'Everyone who has chatted with Baton — and one-step deletion of a customer’s data.' },
   { id: 'policy', label: 'Handoff policy', icon: 'sliders', View: PolicyView, description: 'When the assistant steps aside. Changes apply to the next message.' },
+  { id: 'audit', label: 'Audit log', icon: 'shield', View: AuditView, description: 'Who opened which customer’s conversations, and every admin change.' },
 ];
 
 /** Admin workspace: /admin, /admin/agents, /admin/conversations, /admin/policy. */

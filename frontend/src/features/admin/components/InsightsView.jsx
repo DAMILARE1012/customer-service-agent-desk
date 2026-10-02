@@ -1,5 +1,5 @@
 import { EmptyState, Icon, Spinner } from '../../../components/ui/index.js';
-import { STATUS_META } from '../../../constants/conversation.js';
+import { CLOSED_REASON_META, CONVERSATION_STATUS, STATUS_META } from '../../../constants/conversation.js';
 import { SOLID_TONES } from '../../../components/ui/tones.js';
 import { HANDOFF_REASON_META } from '../../../constants/handoff.js';
 import { errorMessage, formatDuration, formatPercent } from '../../../utils/format.js';
@@ -43,19 +43,36 @@ function ReasonBars({ rows }) {
   );
 }
 
-function StatusList({ byStatus }) {
+function CountList({ title, rows }) {
   return (
-    <ul className="divide-y divide-slate-100">
-      {Object.entries(STATUS_META).map(([status, meta]) => (
-        <li key={status} className="flex items-center justify-between px-5 py-2.5 text-sm">
-          <span className="flex items-center gap-2 text-slate-700">
-            <span className={`size-2 rounded-full ${SOLID_TONES[meta.tone]}`} />
-            {meta.label}
-          </span>
-          <span className="font-medium text-slate-900 tabular-nums">{byStatus[status] ?? 0}</span>
-        </li>
-      ))}
-    </ul>
+    <div>
+      <p className="px-5 pt-3 pb-1 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">{title}</p>
+      <ul className="divide-y divide-slate-100">
+        {rows.map((row) => (
+          <li key={row.key} className="flex items-center justify-between px-5 py-2 text-sm">
+            <span className="flex items-center gap-2 text-slate-700">
+              <span className={`size-2 rounded-full ${SOLID_TONES[row.tone]}`} />
+              {row.label}
+            </span>
+            <span className="font-medium text-slate-900 tabular-nums">{row.count}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Open sessions by state, and closed ones by how they ended (they never reopen). */
+function Sessions({ byStatus, byClosedReason }) {
+  const open = Object.entries(STATUS_META)
+    .filter(([status]) => status !== CONVERSATION_STATUS.RESOLVED)
+    .map(([status, meta]) => ({ key: status, label: meta.label, tone: meta.tone, count: byStatus[status] ?? 0 }));
+  const ended = Object.entries(CLOSED_REASON_META).map(([reason, meta]) => ({ key: reason, label: meta.label, tone: meta.tone, count: byClosedReason?.[reason] ?? 0 }));
+  return (
+    <div className="pb-2">
+      <CountList title="Open now" rows={open} />
+      <CountList title="How sessions ended" rows={ended} />
+    </div>
   );
 }
 
@@ -127,7 +144,7 @@ export function InsightsView() {
   if (isLoading) return <div className="flex justify-center py-16 text-slate-400"><Spinner /></div>;
   if (error) return <EmptyState icon="warning" title="Couldn’t load insights" description={errorMessage(error)} />;
 
-  const { conversations, handoffs, bot, evaluation, links } = data;
+  const { conversations, sessions, handoffs, bot, evaluation, links } = data;
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -135,15 +152,19 @@ export function InsightsView() {
         <StatTile label="Handed to a person" value={formatPercent(handoffs.rate)} detail={`${handoffs.conversationsHandedOff} conversations`} />
         <StatTile label="Bot answer rate" value={formatPercent(bot.answerRate)} detail={`of ${bot.questions} questions`} />
         <StatTile label="Median wait for an agent" value={handoffs.medianWaitSeconds == null ? '—' : formatDuration(handoffs.medianWaitSeconds * 1000)} />
-        <StatTile label="Resolved without an agent" value={bot.resolvedWithoutAgent} detail={`of ${bot.resolved} resolved`} />
+        <StatTile
+          label="Left while waiting"
+          value={formatPercent(sessions?.abandonmentRate)}
+          detail={`${sessions?.byClosedReason?.abandoned ?? 0} of ${handoffs.conversationsHandedOff} handed off`}
+        />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card title="Why the assistant stepped aside" description="Handoffs by primary reason" className="lg:col-span-2">
           <ReasonBars rows={handoffs.byReason} />
         </Card>
-        <Card title="Conversations by state">
-          <StatusList byStatus={conversations.byStatus} />
+        <Card title="Sessions" description={sessions?.followUps ? `${sessions.followUps} started as a follow-up` : undefined}>
+          <Sessions byStatus={conversations.byStatus} byClosedReason={sessions?.byClosedReason} />
         </Card>
       </div>
 

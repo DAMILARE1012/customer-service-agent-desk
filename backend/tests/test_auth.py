@@ -34,10 +34,10 @@ def token(key=KEY, **overrides):
     return jwt.encode({k: v for k, v in claims.items() if v is not None}, key, algorithm="RS256")
 
 
-def test_valid_token_becomes_a_principal_with_app_roles_only(verifier):
-    who = verifier.verify(token())
+def test_valid_token_becomes_a_staff_principal_with_staff_roles_only(verifier):
+    who = verifier.verify(token(realm_access={"roles": ["agent", "customer", "offline_access"]}))
     assert who.sub == "6f1c-uuid" and who.username == "maya.chen" and who.email_verified
-    assert who.roles == {"customer"} and not who.is_staff
+    assert who.roles == {"agent"} and who.is_staff and not who.is_customer  # Keycloak never makes anyone a customer
 
 
 @pytest.mark.parametrize(

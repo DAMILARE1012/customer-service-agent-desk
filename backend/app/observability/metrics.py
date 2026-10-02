@@ -44,6 +44,7 @@ llm_cost = _metric(Counter, "llm_cost_usd", "Estimated LLM spend (from LLM_PRICE
 handoffs = _metric(Counter, "handoffs", "Handoffs to a human by primary reason and priority", ("reason", "priority", "service"))
 handoff_wait = _metric(Histogram, "handoff_wait_seconds", "Time from handoff to an agent accepting it", ("priority", "service"),
                        buckets=(15, 30, 60, 120, 300, 600, 1200, 1800, 3600))  # fmt: skip
+conversations_closed = _metric(Counter, "conversations_closed", "Support sessions ended, by why they ended", ("reason", "service"))
 copilot_drafts = _metric(Counter, "copilot_drafts", "What agents did with the copilot draft when they replied", ("action", "service"))
 online_eval_score = _metric(Histogram, "online_eval_score", "LLM-judge scores on sampled live answers (0–1)", ("metric", "service"),
                             buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1))  # fmt: skip

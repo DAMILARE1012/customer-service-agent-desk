@@ -1,4 +1,4 @@
-"""uv run baton-eval-rag [--limit N] [--name TEXT] [--no-judge] [--concurrency N]
+"""uv run baton-eval-rag [--limit N] [--name TEXT] [--no-judge] [--concurrency N] [--include-reviewed]
 
 End-to-end evaluation as a Langfuse experiment. Every question runs through the production answer step
 (retrieve → gate → generate with citations) and is scored on four layers:
@@ -58,7 +58,7 @@ def _hash(text: str) -> str:
 # ── 1. Dataset (idempotent upsert: stable ids from the question text) ──────────
 
 
-def sync_dataset(langfuse, name: str) -> int:
+def sync_dataset(langfuse, name: str, include_reviewed: bool = False) -> int:
     try:
         langfuse.create_dataset(
             name=name,
@@ -77,6 +77,16 @@ def sync_dataset(langfuse, name: str) -> int:
          "metadata": {"kind": "off_topic"}}
         for q in OFF_TOPIC_QUESTIONS
     ]  # fmt: skip
+    if include_reviewed:
+        # Agent-resolved cases an admin approved in the review queue: the agent's answer is the reference;
+        # there are no gold articles, so retrieval metrics don't apply.
+        from app.review.publish import load_reviewed_questions
+
+        items += [
+            {"id": f"reviewed-{r['id']}", "input": {"question": r["question"]},
+             "expected_output": {"answer": r["answer"], "shouldAnswer": True}, "metadata": {"kind": "reviewed"}}
+            for r in load_reviewed_questions()
+        ]  # fmt: skip
     with ThreadPoolExecutor(max_workers=10) as pool:
         list(pool.map(lambda item: langfuse.create_dataset_item(dataset_name=name, **item), items))
     return len(items)
@@ -114,15 +124,16 @@ def make_evaluator(use_judge: bool):
         if (metadata or {}).get("kind") == "off_topic":
             return [Evaluation(name="handoff_correct", value=1 if output["decision"] == "handed_off" else 0, comment=f"status: {output['status']}")]
 
-        gold = expected_output["articleIds"]
-        evals = [
-            Evaluation(name="recall_at_5", value=recall_at_k(output["contexts"], gold, K)),
-            Evaluation(name="ndcg_at_5", value=ndcg_at_k(output["contexts"], gold, K)),
-            Evaluation(name="context_precision_at_5", value=context_precision_at_k(output["contexts"], gold, K)),
-            Evaluation(name="answered", value=1 if output["decision"] == "answered" else 0, comment=f"status: {output['status']}"),
-        ]
+        gold = expected_output.get("articleIds")  # None for reviewed (agent-answered) questions
+        evals = [Evaluation(name="answered", value=1 if output["decision"] == "answered" else 0, comment=f"status: {output['status']}")]
+        if gold:
+            evals += [
+                Evaluation(name="recall_at_5", value=recall_at_k(output["contexts"], gold, K)),
+                Evaluation(name="ndcg_at_5", value=ndcg_at_k(output["contexts"], gold, K)),
+                Evaluation(name="context_precision_at_5", value=context_precision_at_k(output["contexts"], gold, K)),
+            ]
         answered = output["decision"] == "answered"
-        if answered:
+        if answered and gold:
             gold_set = set(gold)
             correct = any(c["docId"] in gold_set or gold_set.intersection(c["alsoIn"]) for c in output["citations"])
             evals.append(Evaluation(name="citation_correct", value=1 if correct else 0, comment=" | ".join(c["title"] for c in output["citations"])))
@@ -204,6 +215,7 @@ def main() -> None:
     parser.add_argument("--name", help="run name shown in Langfuse (default: model + settings + time)")
     parser.add_argument("--no-judge", action="store_true", help="skip the LLM judge (retrieval and decision metrics only)")
     parser.add_argument("--concurrency", type=int, default=settings.eval_rag_concurrency, help="parallel questions")
+    parser.add_argument("--include-reviewed", action="store_true", help="also run the test questions approved in the admin review queue")
     args = parser.parse_args()
 
     settings.langfuse_tracing_environment = EXPERIMENT_ENVIRONMENT
@@ -217,7 +229,7 @@ def main() -> None:
     try:
         dataset_name = settings.eval_rag_dataset
         print(f'Syncing dataset "{dataset_name}"…')
-        total = sync_dataset(langfuse, dataset_name)
+        total = sync_dataset(langfuse, dataset_name, include_reviewed=args.include_reviewed)
         dataset = langfuse.get_dataset(dataset_name)
 
         def by_kind(kind: str) -> list:
@@ -225,6 +237,8 @@ def main() -> None:
             return sorted(active, key=lambda i: i.id)
 
         selected = by_kind("wixqa")[: args.limit] + by_kind("off_topic")[: max(1, math.ceil(args.limit / 5))]
+        if args.include_reviewed:
+            selected += by_kind("reviewed")
         kinds: dict[str, int] = {}
         for i in selected:
             kinds[i.metadata["kind"]] = kinds.get(i.metadata["kind"], 0) + 1

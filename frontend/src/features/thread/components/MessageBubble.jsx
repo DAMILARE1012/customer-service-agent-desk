@@ -1,4 +1,4 @@
-import { Avatar } from '../../../components/ui/index.js';
+import { Avatar, MessageText } from '../../../components/ui/index.js';
 import { SENDER } from '../../../constants/conversation.js';
 import { formatClock } from '../../../utils/format.js';
 import { BotReplyMeta } from './BotReplyMeta.jsx';
@@ -31,7 +31,7 @@ export function MessageBubble({ message, customerName }) {
           {message.pending && ' · sending…'}
         </span>
         <div className={`rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${style.bubble} ${message.pending ? 'opacity-60' : ''}`}>
-          {message.text}
+          {fromCustomer ? message.text : <MessageText text={message.text} />}
         </div>
         {message.sender === SENDER.BOT && <BotReplyMeta meta={message.meta} />}
       </div>

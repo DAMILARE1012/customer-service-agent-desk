@@ -1,15 +1,12 @@
-"""Authentication (Keycloak access tokens) and authorization (realm roles) for the API.
+"""Authentication and authorization for the API. Two kinds of bearer token:
 
-Every request carries `Authorization: Bearer <access token>` from the web app's Keycloak login. The
-token is verified locally — signature against the realm's published keys, issuer, audience (baton-api)
-and expiry — so no call to Keycloak is made per request. Roles come from `realm_access.roles`:
+    staff      Keycloak access tokens (RS256), verified locally against the realm's published keys —
+               issuer, audience (baton-api), expiry. Realm roles: `agent` (the desk), `admin` (admin).
+    customers  widget session tokens (HS256, issuer "baton-widget") from POST /widget/session — see
+               app/widget.py. Customers never sign in to Baton; they only reach their own conversations.
 
-    customer   their own conversations only, through a customer-safe view
-    agent      the desk: queue, handoff briefs, replies, resolve
-    admin      agents, every conversation, handoff policy, insights
-
-Staff accounts (agent or admin) never get a customer profile, even if Keycloak's default role gives
-them `customer`: a person is either served by the desk or works on it.
+The token's issuer picks the verifier, and each verifier pins its own algorithm, so one kind can never be
+passed off as the other.
 """
 
 import asyncio
@@ -22,11 +19,12 @@ import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app import widget
 from app.config import settings
 from app.conversation.lifecycle import ApiError
 from app.db import Identity, repository
 
-ROLES = ("customer", "agent", "admin")
+STAFF_ROLES = ("agent", "admin")
 
 
 @dataclass(frozen=True)
@@ -37,6 +35,11 @@ class Principal:
     email: str | None
     email_verified: bool
     roles: frozenset[str]
+    customer_id: str | None = None  # widget sessions only
+
+    @property
+    def is_customer(self) -> bool:
+        return self.customer_id is not None
 
     @property
     def is_staff(self) -> bool:
@@ -64,7 +67,7 @@ class TokenVerifier:
             options={"require": ["exp", "iat", "sub", "iss", "aud"]},
             leeway=10,
         )
-        roles = frozenset(claims.get("realm_access", {}).get("roles", [])) & frozenset(ROLES)
+        roles = frozenset(claims.get("realm_access", {}).get("roles", [])) & frozenset(STAFF_ROLES)
         username = claims.get("preferred_username") or claims["sub"]
         return Principal(
             sub=claims["sub"],
@@ -84,12 +87,23 @@ def verifier() -> TokenVerifier:
 _bearer = HTTPBearer(auto_error=False, description="Keycloak access token for the baton-api audience")
 
 
+def widget_principal(token: str) -> Principal:
+    claims = widget.verify_session(token)
+    return Principal(sub=claims["sub"], username=claims["sub"], name=claims.get("name") or "Customer", email=None,
+                     email_verified=False, roles=frozenset({"customer"}), customer_id=claims["sub"])  # fmt: skip
+
+
+def verify_token(token: str) -> Principal:
+    issuer = jwt.decode(token, options={"verify_signature": False}).get("iss")  # only to choose the verifier
+    return widget_principal(token) if issuer == widget.ISSUER else verifier().verify(token)
+
+
 async def principal(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> Principal:
     if credentials is None:
         raise ApiError(401, "Sign in required.")
     try:
         # The first call per key fetches the realm's public keys over HTTP; keep it off the event loop.
-        return await asyncio.to_thread(verifier().verify, credentials.credentials)
+        return await asyncio.to_thread(verify_token, credentials.credentials)
     except jwt.PyJWKClientConnectionError as error:
         raise ApiError(503, "Can't reach the identity provider to verify your sign-in.") from error
     except jwt.PyJWTError as error:
@@ -98,7 +112,8 @@ async def principal(credentials: HTTPAuthorizationCredentials | None = Depends(_
 
 # ── Profiles (the customers / agents / admins tables), refreshed at most every few minutes ──
 
-_PROFILE_TTL_S = 300
+# Short, so an admin disabling an agent takes effect quickly in every API process.
+_PROFILE_TTL_S = 30
 _profiles: dict[tuple[str, str], tuple[float, dict]] = {}
 # A freshly signed-in app fires several requests at once; only one of them should create the row.
 _profile_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -123,9 +138,18 @@ def forget_profile(kind: str, person_id: str) -> None:
 
 
 async def current_customer(who: Principal = Depends(principal)) -> dict:
-    if "customer" not in who.roles or who.is_staff:
-        raise ApiError(403, "Only customers can do this.")
-    return await profile("customer", who)
+    """The customer behind a widget session. Staff tokens can't act as customers."""
+    if not who.is_customer:
+        raise ApiError(403, "Customers chat through the website widget; staff accounts can't.")
+    key = ("customer", who.customer_id)
+    cached = _profiles.get(key)
+    if cached and time.monotonic() - cached[0] < _PROFILE_TTL_S:
+        return cached[1]
+    customer = await repository().get_person("customer", who.customer_id)
+    if customer is None:  # erased since the session started
+        raise ApiError(401, "This chat session has ended. Start a new one.")
+    _profiles[key] = (time.monotonic(), customer)
+    return customer
 
 
 async def current_agent(who: Principal = Depends(principal)) -> dict:

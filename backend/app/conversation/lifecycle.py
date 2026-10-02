@@ -4,10 +4,13 @@ Pure functions over the conversation dict (wire format), so they're trivial to t
 LLM-backed parts (bot turns, copilot drafts) live in engine.py and bot.py.
 """
 
+from app.config import settings
 from app.conversation.constants import (
+    CLOSED_NOTE,
     HANDOFF_NOTICE,
     REASON_LABEL,
     BotReplyKind,
+    ClosedReason,
     HandoffReason,
     HandoffStatus,
     Sender,
@@ -46,7 +49,9 @@ def add_bot_message(conversation: dict, text: str, now: int, meta: dict) -> dict
     return add_message(conversation, {"sender": Sender.BOT, "text": text, "createdAt": now, "meta": meta})
 
 
-def create_conversation(customer: dict, now: int) -> dict:
+def create_conversation(customer: dict, now: int, follow_up_of: dict | None = None) -> dict:
+    """A new support session. `follow_up_of` is a snapshot of the closed conversation it continues
+    (see views.session_outcome) — shown to agents, never replayed to the bot."""
     return {
         "id": next_id("conv"),
         "customer": customer,
@@ -55,6 +60,10 @@ def create_conversation(customer: dict, now: int) -> dict:
         "subject": None,
         "createdAt": now,
         "updatedAt": now,
+        "closedAt": None,
+        "closedReason": None,
+        "followUpOf": follow_up_of,
+        "customerSeenAt": now,
         "messages": [],
         "insights": {
             "intent": None,
@@ -152,7 +161,19 @@ def post_agent_message(conversation: dict, agent: dict, text: str, now: int) -> 
     conversation["copilot"] = None
 
 
+OPEN = (Status.BOT_ACTIVE, Status.HANDOFF_PENDING, Status.AGENT_ACTIVE)
+
+
+def close_conversation(conversation: dict, reason: ClosedReason, now: int, actor: dict | None = None) -> None:
+    """End the session for good. A handoff still waiting is marked abandoned, not left in the queue."""
+    assert_status(conversation, OPEN, "close the conversation")
+    if conversation["status"] == Status.HANDOFF_PENDING and conversation["handoff"]:
+        conversation["handoff"]["status"] = HandoffStatus.ABANDONED
+    conversation.update(status=Status.RESOLVED, copilot=None, closedReason=reason, closedAt=now)
+    note = CLOSED_NOTE[reason].format(actor=actor["name"] if actor else "the bot", minutes=round(settings.session_idle_minutes))
+    add_system_event(conversation, SystemEvent.RESOLVED, note, now, closedReason=reason)
+
+
 def resolve_conversation(conversation: dict, actor: dict | None, now: int) -> None:
     assert_status(conversation, (Status.BOT_ACTIVE, Status.AGENT_ACTIVE), "resolve")
-    conversation.update(status=Status.RESOLVED, copilot=None)
-    add_system_event(conversation, SystemEvent.RESOLVED, f"Resolved by {actor['name'] if actor else 'the bot'}", now)
+    close_conversation(conversation, ClosedReason.RESOLVED, now, actor)

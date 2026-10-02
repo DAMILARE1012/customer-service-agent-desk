@@ -5,14 +5,38 @@ import re
 
 from app.conversation import lifecycle
 from app.conversation.bot import bot_turn, draft_copilot
-from app.conversation.constants import HandoffReason, Sender, Status, SystemEvent
+from app.conversation.constants import ClosedReason, HandoffReason, Sender, Status
+from app.conversation.lifecycle import ApiError
 from app.conversation.util import truncate
-from app.observability.metrics import copilot_drafts, handoff_wait, handoffs, label
-from app.observability.tracing import observe, trace_attributes
+from app.observability.metrics import conversations_closed, copilot_drafts, handoff_wait, handoffs, label
+from app.observability.tracing import current_trace_id, observe, trace_attributes
 
 create_conversation = lifecycle.create_conversation
 return_to_bot = lifecycle.return_to_bot
-resolve_conversation = lifecycle.resolve_conversation
+
+
+def close_conversation(conversation: dict, reason: ClosedReason, now: int, actor: dict | None = None) -> dict:
+    with _traced(conversation, f"close:{reason}"), observe("close-conversation", input={"reason": reason}):
+        _remember_trace(conversation)
+        lifecycle.close_conversation(conversation, reason, now, actor)
+        conversations_closed.labels(**label(reason=reason)).inc()
+        return conversation
+
+
+def resolve_conversation(conversation: dict, actor: dict | None, now: int) -> dict:
+    with _traced(conversation, "resolve"), observe("resolve"):
+        _remember_trace(conversation)
+        lifecycle.resolve_conversation(conversation, actor, now)
+        conversations_closed.labels(**label(reason=ClosedReason.RESOLVED)).inc()
+        return conversation
+
+
+def _remember_trace(conversation: dict) -> None:
+    """Keep the conversation's Langfuse trace ids, so erasing a customer can delete their traces too."""
+    trace_id = current_trace_id()
+    traces = conversation.setdefault("traceIds", [])
+    if trace_id and trace_id not in traces:
+        traces.append(trace_id)
 
 
 def _traced(conversation: dict, name: str):
@@ -21,16 +45,18 @@ def _traced(conversation: dict, name: str):
         session_id=conversation["id"],
         user_id=customer["id"],
         trace_name=name,
-        tags=["baton", f"tier:{customer['tier']}"],
+        tags=["baton", f"tier:{customer['tier']}", *(["follow-up"] if conversation.get("followUpOf") else [])],
         metadata={"customerTier": customer["tier"]},
     )
 
 
 async def receive_customer_message(conversation: dict, text: str, now: int) -> dict:
     with _traced(conversation, "customer-message"), observe("customer-message", input=text) as span:
+        _remember_trace(conversation)
         if conversation["status"] == Status.RESOLVED:
-            conversation.update(status=Status.BOT_ACTIVE, assignee=None)
-            lifecycle.add_system_event(conversation, SystemEvent.REOPENED, "Customer replied — conversation reopened", now)
+            # Sessions don't reopen: a returning customer starts fresh (optionally as a linked follow-up).
+            raise ApiError(409, "This conversation has ended. Start a new one — you can link it to this one as a follow-up.")
+        conversation["customerSeenAt"] = now
 
         message = lifecycle.add_message(conversation, {"sender": Sender.CUSTOMER, "text": text, "createdAt": now})
         conversation["subject"] = conversation["subject"] or truncate(text, 70)
@@ -56,6 +82,7 @@ async def receive_customer_message(conversation: dict, text: str, now: int) -> d
 
 async def accept_handoff(conversation: dict, agent: dict, now: int) -> dict:
     with _traced(conversation, "accept-handoff"), observe("accept-handoff"):
+        _remember_trace(conversation)
         lifecycle.accept_handoff(conversation, agent, now)
         handoff = conversation["handoff"]
         handoff_wait.labels(**label(priority=handoff["priority"])).observe((now - handoff["requestedAt"]) / 1000)
@@ -65,6 +92,7 @@ async def accept_handoff(conversation: dict, agent: dict, now: int) -> dict:
 
 async def take_over(conversation: dict, agent: dict, now: int) -> dict:
     with _traced(conversation, "take-over"), observe("take-over"):
+        _remember_trace(conversation)
         lifecycle.take_over(conversation, agent, now)
         handoffs.labels(**label(reason=HandoffReason.AGENT_INITIATED, priority=conversation["handoff"]["priority"])).inc()
         conversation["copilot"] = await draft_copilot(conversation, lifecycle.last_open_question(conversation))

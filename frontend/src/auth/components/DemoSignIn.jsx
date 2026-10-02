@@ -1,6 +1,7 @@
 import { useDispatch } from 'react-redux';
 import { Brand } from '../../components/brand/Brand.jsx';
 import { Avatar, Badge, Icon } from '../../components/ui/index.js';
+import { Link } from '../../app/router.jsx';
 import { signedIn } from '../authSlice.js';
 import { DEMO_PERSONAS, saveDemoPersona } from '../demoPersonas.js';
 import { ROLE, ROLE_LABEL } from '../roles.js';
@@ -22,7 +23,7 @@ export function DemoSignIn() {
         </div>
 
         <div className="rounded-2xl bg-white p-5 shadow-xl">
-          <h1 className="text-sm font-semibold text-slate-900">Sign in to the demo as…</h1>
+          <h1 className="text-sm font-semibold text-slate-900">Sign in to the staff app as…</h1>
           <p className="mt-1 text-xs text-slate-500">
             Demo mode runs on an in-browser mock backend. Set <code className="rounded bg-slate-100 px-1">VITE_KEYCLOAK_URL</code> to sign in with Keycloak instead.
           </p>
@@ -51,6 +52,13 @@ export function DemoSignIn() {
               </li>
             ))}
           </ul>
+          <Link to="/demo-store" className="mt-4 flex items-center justify-between rounded-xl bg-indigo-50 px-3 py-3 text-sm text-indigo-800 ring-1 ring-indigo-100 hover:bg-indigo-100">
+            <span>
+              <span className="block font-medium">Be a customer instead</span>
+              <span className="text-xs text-indigo-700">Customers don’t sign in — open the demo shop and use the chat widget.</span>
+            </span>
+            <Icon name="arrowRight" className="size-4" />
+          </Link>
         </div>
       </div>
     </div>

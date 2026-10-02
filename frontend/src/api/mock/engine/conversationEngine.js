@@ -1,4 +1,4 @@
-import { BOT_REPLY_KIND, CONVERSATION_STATUS, SENDER, SYSTEM_EVENT } from '../../../constants/conversation.js';
+import { BOT_REPLY_KIND, CLOSED_REASON, CONVERSATION_STATUS, SENDER, SYSTEM_EVENT } from '../../../constants/conversation.js';
 import { HANDOFF_REASON, HANDOFF_REASON_META, HANDOFF_STATUS } from '../../../constants/handoff.js';
 import { extractEntities, mergeEntities } from './entities.js';
 import { buildHandoffPacket } from './handoffPacket.js';
@@ -57,7 +57,7 @@ const HANDOFF_NOTICE = {
 
 // ─── lifecycle ────────────────────────────────────────────────────────────────
 
-export function createConversation(customer, now) {
+export function createConversation(customer, now, followUpOf = null) {
   return {
     id: nextId('conv'),
     customer,
@@ -66,6 +66,10 @@ export function createConversation(customer, now) {
     subject: null,
     createdAt: now,
     updatedAt: now,
+    closedAt: null,
+    closedReason: null,
+    followUpOf, // snapshot of the closed session this continues — for agents, never replayed to the bot
+    customerSeenAt: now,
     messages: [],
     insights: {
       intent: null,
@@ -94,10 +98,10 @@ export function trackSignals(conversation, message) {
 
 export function receiveCustomerMessage(conversation, text, now) {
   if (conversation.status === RESOLVED) {
-    conversation.status = BOT_ACTIVE;
-    conversation.assignee = null;
-    addSystemEvent(conversation, SYSTEM_EVENT.REOPENED, 'Customer replied — conversation reopened', now);
+    // Sessions don't reopen: a returning customer starts fresh (optionally as a linked follow-up).
+    throw new ApiError(409, 'This conversation has ended. Start a new one — you can link it to this one as a follow-up.');
   }
+  conversation.customerSeenAt = now;
 
   const message = addMessage(conversation, { sender: SENDER.CUSTOMER, text, createdAt: now });
   conversation.subject ??= truncate(text, 70);
@@ -257,10 +261,40 @@ export function postAgentMessage(conversation, agent, text, now) {
   return conversation;
 }
 
+export const SESSION_IDLE_MINUTES = 30;
+export const SESSION_ABANDON_MINUTES = 10;
+
+const CLOSED_NOTE = {
+  [CLOSED_REASON.RESOLVED]: (actor) => `Resolved by ${actor?.name ?? 'the bot'}`,
+  [CLOSED_REASON.ENDED_BY_CUSTOMER]: () => 'The customer ended the chat',
+  [CLOSED_REASON.INACTIVE]: () => `Closed after ${SESSION_IDLE_MINUTES} minutes without activity`,
+  [CLOSED_REASON.ABANDONED]: () => 'The customer left before an agent joined',
+};
+
+/** End the session for good. A handoff still waiting is marked abandoned, not left in the queue. */
+export function closeConversation(conversation, reason, now, actor = null) {
+  assertStatus(conversation, [BOT_ACTIVE, HANDOFF_PENDING, AGENT_ACTIVE], 'close the conversation');
+  if (conversation.status === HANDOFF_PENDING && conversation.handoff) conversation.handoff.status = HANDOFF_STATUS.ABANDONED;
+  Object.assign(conversation, { status: RESOLVED, copilot: null, closedReason: reason, closedAt: now });
+  addSystemEvent(conversation, SYSTEM_EVENT.RESOLVED, CLOSED_NOTE[reason](actor), now, { closedReason: reason });
+  return conversation;
+}
+
 export function resolveConversation(conversation, actor, now) {
   assertStatus(conversation, [BOT_ACTIVE, AGENT_ACTIVE], 'resolve');
-  conversation.status = RESOLVED;
-  conversation.copilot = null;
-  addSystemEvent(conversation, SYSTEM_EVENT.RESOLVED, `Resolved by ${actor?.name ?? 'the bot'}`, now);
-  return conversation;
+  return closeConversation(conversation, CLOSED_REASON.RESOLVED, now, actor);
+}
+
+const lastCustomerMessageAt = (c) => c.messages.filter((m) => m.sender === SENDER.CUSTOMER).at(-1)?.createdAt ?? c.createdAt;
+
+/** Same rules as the API's session sweeper (backend/app/conversation/sessions.py). */
+export function dueForClosing(conversation, now) {
+  const idleMs = SESSION_IDLE_MINUTES * 60_000;
+  if (conversation.status === BOT_ACTIVE) return now - lastCustomerMessageAt(conversation) >= idleMs ? CLOSED_REASON.INACTIVE : null;
+  if (conversation.status === AGENT_ACTIVE) return now - conversation.updatedAt >= idleMs ? CLOSED_REASON.INACTIVE : null;
+  if (conversation.status === HANDOFF_PENDING) {
+    const seen = Math.max(conversation.customerSeenAt ?? 0, lastCustomerMessageAt(conversation));
+    return now - seen >= SESSION_ABANDON_MINUTES * 60_000 ? CLOSED_REASON.ABANDONED : null;
+  }
+  return null;
 }

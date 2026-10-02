@@ -3,6 +3,7 @@
   "private": true,
   "description": "Baton — shortcuts for the whole project. The app lives in frontend/ (React) and backend/ (FastAPI).",
   "scripts": {
+    "accounts": "node scripts/accounts.mjs",
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
     "api": "cd backend && uv run baton-api",

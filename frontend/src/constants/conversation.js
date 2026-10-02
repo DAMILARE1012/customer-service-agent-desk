@@ -33,6 +33,22 @@ export const SYSTEM_EVENT = Object.freeze({
   REOPENED: 'reopened',
 });
 
+// Why a conversation (a support session) ended. Closed conversations never reopen: the customer
+// starts a new one, optionally as a follow-up linked to the old one.
+export const CLOSED_REASON = Object.freeze({
+  RESOLVED: 'resolved',
+  ENDED_BY_CUSTOMER: 'ended_by_customer',
+  INACTIVE: 'inactive',
+  ABANDONED: 'abandoned',
+});
+
+export const CLOSED_REASON_META = {
+  [CLOSED_REASON.RESOLVED]: { label: 'Resolved', customerText: 'Conversation closed', tone: 'emerald' },
+  [CLOSED_REASON.ENDED_BY_CUSTOMER]: { label: 'Ended by customer', customerText: 'You ended the chat', tone: 'slate' },
+  [CLOSED_REASON.INACTIVE]: { label: 'Closed — inactive', customerText: 'Chat closed after a period of inactivity', tone: 'slate' },
+  [CLOSED_REASON.ABANDONED]: { label: 'Customer left', customerText: 'Chat closed — we missed you. Start a new chat any time', tone: 'amber' },
+};
+
 // How the bot classified its own reply.
 export const BOT_REPLY_KIND = Object.freeze({
   ANSWER: 'answer',

@@ -1,13 +1,9 @@
 import { ROLE } from './roles.js';
 
-// Without Keycloak (VITE_KEYCLOAK_URL empty) the app runs against the in-browser mock backend and you
-// pick who to be. The same people exist as Keycloak users in infra/keycloak/import/baton-realm.json.
+// Without Keycloak (VITE_KEYCLOAK_URL empty) the staff app runs against the in-browser mock backend and you
+// pick which staff member to be. Customers use the widget on the demo store (/demo-store). The same
+// staff exist as Keycloak users in infra/keycloak/import/baton-realm.json.
 export const DEMO_PERSONAS = [
-  {
-    id: 'maya',
-    blurb: 'Customer · Plus tier. Asks the assistant for help and gets handed to a person when needed.',
-    user: { sub: 'demo-maya', username: 'maya.chen', name: 'Maya Chen', email: 'maya.chen@example.com', roles: [ROLE.CUSTOMER] },
-  },
   {
     id: 'alex',
     blurb: 'Support agent. Works the handoff queue with the bot’s brief and copilot drafts.',

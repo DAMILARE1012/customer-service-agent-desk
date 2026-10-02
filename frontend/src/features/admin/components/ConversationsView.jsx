@@ -1,47 +1,13 @@
 import { useState } from 'react';
 import { Avatar, Badge, EmptyState, Icon, Spinner } from '../../../components/ui/index.js';
-import { STATUS_META } from '../../../constants/conversation.js';
+import { CLOSED_REASON_META, STATUS_META } from '../../../constants/conversation.js';
 import { HANDOFF_REASON_META } from '../../../constants/handoff.js';
 import { errorMessage, formatRelative } from '../../../utils/format.js';
-import { useGetConversationQuery } from '../../conversations/conversationsApi.js';
-import { HandoffSummary } from '../../handoff/components/HandoffSummary.jsx';
-import { MessageList } from '../../thread/components/MessageList.jsx';
+import { TranscriptDrawer } from '../../thread/components/TranscriptDrawer.jsx';
 import { useGetAdminConversationsQuery, useGetAgentsQuery } from '../adminApi.js';
 import { Card } from './Card.jsx';
 
 const selectClass = 'rounded-lg border-0 bg-white py-1.5 pr-8 pl-3 text-sm ring-1 ring-slate-300 focus:ring-2 focus:ring-indigo-500';
-
-/** Read-only transcript and brief, in a panel over the list. */
-function ConversationDrawer({ id, onClose }) {
-  const { currentData: conversation, error } = useGetConversationQuery(id, { pollingInterval: 5000 });
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-slate-900/30" onClick={onClose} role="presentation">
-      <aside className="flex h-full w-full max-w-2xl flex-col bg-slate-50 shadow-2xl" onClick={(e) => e.stopPropagation()} aria-label="Conversation">
-        <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-900">{conversation?.customer.name ?? 'Conversation'}</p>
-            <p className="truncate text-xs text-slate-500">{conversation?.subject}</p>
-          </div>
-          <button type="button" onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">
-            <Icon name="x" className="size-5" />
-          </button>
-        </header>
-        {error && <EmptyState icon="warning" title="Couldn’t load conversation" description={errorMessage(error)} />}
-        {!conversation && !error && <div className="flex flex-1 items-center justify-center text-slate-400"><Spinner /></div>}
-        {conversation && (
-          <>
-            {conversation.handoff && (
-              <div className="border-b border-slate-200 bg-white">
-                <HandoffSummary summary={conversation.handoff.summary} intent={conversation.handoff.intent} />
-              </div>
-            )}
-            <MessageList messages={conversation.messages} customerName={conversation.customer.name} />
-          </>
-        )}
-      </aside>
-    </div>
-  );
-}
 
 export function ConversationsView() {
   const [filters, setFilters] = useState({ status: '', agentId: '', q: '' });
@@ -103,7 +69,14 @@ export function ConversationsView() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-5 py-3"><Badge tone={STATUS_META[c.status].tone}>{STATUS_META[c.status].label}</Badge></td>
+                      <td className="px-5 py-3">
+                        {c.closedReason ? (
+                          <Badge tone={CLOSED_REASON_META[c.closedReason].tone}>{CLOSED_REASON_META[c.closedReason].label}</Badge>
+                        ) : (
+                          <Badge tone={STATUS_META[c.status].tone}>{STATUS_META[c.status].label}</Badge>
+                        )}
+                        {c.followUpOf && <span className="ml-1.5 text-[11px] text-indigo-600">follow-up</span>}
+                      </td>
                       <td className="px-5 py-3 text-xs text-slate-600">{reason ? <span className="inline-flex items-center gap-1"><Icon name={reason.icon} className="size-3.5 text-slate-400" />{reason.label}</span> : '—'}</td>
                       <td className="px-5 py-3 text-xs text-slate-600">{c.assignee?.name ?? '—'}</td>
                       <td className="px-5 py-3 text-xs text-slate-500">{formatRelative(c.updatedAt)}</td>
@@ -115,7 +88,7 @@ export function ConversationsView() {
           </div>
         )}
       </Card>
-      {openId && <ConversationDrawer id={openId} onClose={() => setOpenId(null)} />}
+      {openId && <TranscriptDrawer conversationId={openId} onClose={() => setOpenId(null)} />}
     </>
   );
 }

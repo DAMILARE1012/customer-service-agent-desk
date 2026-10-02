@@ -1,9 +1,11 @@
-import { CONVERSATION_STATUS } from '../../constants/conversation.js';
+import { CLOSED_REASON, CONVERSATION_STATUS } from '../../constants/conversation.js';
 import { HANDOFF_POLICY, HANDOFF_REASON_META } from '../../constants/handoff.js';
+import { customerAdminRoutes, audit, privacyNotice, reviewRoutes } from './dataRules.js';
 import { db, findAgent, findConversation, profileFor } from './db.js';
 import * as engine from './engine/conversationEngine.js';
 import { ApiError } from './engine/conversationEngine.js';
 import { customerSummary, customerView } from './engine/customerView.js';
+import { sessionOutcome } from './engine/sessionOutcome.js';
 import { toSummary } from './engine/summary.js';
 
 // The same endpoints and access rules as the FastAPI backend (backend/app/api/main.py). The demo
@@ -104,8 +106,15 @@ function insights() {
   const attempts = Object.values(outcomes).reduce((sum, n) => sum + n, 0);
   const resolved = conversations.filter((c) => c.status === CONVERSATION_STATUS.RESOLVED);
   waits.sort((a, b) => a - b);
+  const closedBy = Object.fromEntries(Object.values(CLOSED_REASON).map((r) => [r, resolved.filter((c) => c.closedReason === r).length]));
   return {
     conversations: { total: conversations.length, byStatus },
+    sessions: {
+      closed: resolved.length,
+      byClosedReason: closedBy,
+      abandonmentRate: handedOff ? closedBy[CLOSED_REASON.ABANDONED] / handedOff : null,
+      followUps: conversations.filter((c) => c.followUpOf).length,
+    },
     handoffs: {
       conversationsHandedOff: handedOff,
       rate: conversations.length ? handedOff / conversations.length : null,
@@ -133,7 +142,7 @@ const routes = [
   ['GET', /^\/me$/, (_, __, user) => {
     signedIn(user);
     const me = { user: { sub: user.sub, username: user.username, name: user.name, email: user.email, roles: [...user.roles].sort() } };
-    if (has(user, 'customer') && !isStaff(user)) me.customer = profileFor('customer', user);
+    if (has(user, 'customer') && !isStaff(user)) Object.assign(me, { customer: profileFor('customer', user), privacy: privacyNotice() });
     if (has(user, 'agent')) me.agent = profileFor('agent', user);
     if (has(user, 'admin')) me.admin = profileFor('admin', user);
     return me;
@@ -144,12 +153,28 @@ const routes = [
     const customer = asCustomer(user);
     return sortRecent([...db.conversations.values()].filter((c) => c.customer.id === customer.id)).map(customerSummary);
   }],
-  ['POST', /^\/me\/conversations$/, (_, __, user) => {
-    const conversation = engine.createConversation(asCustomer(user), now());
+  ['POST', /^\/me\/conversations$/, (_, body, user) => {
+    const customer = asCustomer(user);
+    // One live session per customer: a reload or second tab resumes it.
+    const live = [...db.conversations.values()].find((c) => c.customer.id === customer.id && c.status !== CONVERSATION_STATUS.RESOLVED);
+    if (live) return customerView(live);
+    let followUp = null;
+    if (body?.followUpOf) {
+      const previous = ownConversation(body.followUpOf, customer);
+      if (previous.status !== CONVERSATION_STATUS.RESOLVED) throw new ApiError(409, 'You can only follow up on a conversation that has ended.');
+      followUp = sessionOutcome(previous);
+    }
+    const conversation = engine.createConversation(customer, now(), followUp);
     db.conversations.set(conversation.id, conversation);
     return customerView(conversation);
   }],
-  ['GET', /^\/me\/conversations\/([\w-]+)$/, ([id], __, user) => customerView(ownConversation(id, asCustomer(user)))],
+  ['GET', /^\/me\/conversations\/([\w-]+)$/, ([id], __, user) => {
+    const conversation = ownConversation(id, asCustomer(user));
+    if (conversation.status !== CONVERSATION_STATUS.RESOLVED) conversation.customerSeenAt = now(); // presence
+    return customerView(conversation);
+  }],
+  ['POST', /^\/me\/conversations\/([\w-]+)\/end$/, ([id], __, user) =>
+    customerView(engine.closeConversation(ownConversation(id, asCustomer(user)), CLOSED_REASON.ENDED_BY_CUSTOMER, now()))],
   ['POST', /^\/me\/conversations\/([\w-]+)\/messages$/, ([id], body, user) => {
     const conversation = ownConversation(id, asCustomer(user));
     if (!body?.text?.trim()) throw new ApiError(400, '"text" field required.');
@@ -158,11 +183,21 @@ const routes = [
 
   // Agents
   ['GET', /^\/customers$/, (_, __, user) => (asStaff(user), db.customers)],
+  ['GET', /^\/customers\/([\w-]+)\/conversations$/, ([customerId], __, user) => {
+    asStaff(user);
+    audit(user, 'customer.timeline.view', { customerId });
+    return sortRecent([...db.conversations.values()].filter((c) => c.customer.id === customerId)).map(sessionOutcome);
+  }],
   ['GET', /^\/conversations$/, (_, __, user) => {
     const agent = asAgent(user);
     return [...db.conversations.values()].filter((c) => c.status !== CONVERSATION_STATUS.RESOLVED || c.assignee?.id === agent.id).map(toSummary);
   }],
-  ['GET', /^\/conversations\/([\w-]+)$/, ([id], __, user) => (asStaff(user), findConversation(id))],
+  ['GET', /^\/conversations\/([\w-]+)$/, ([id], __, user) => {
+    asStaff(user);
+    const conversation = findConversation(id);
+    audit(user, 'conversation.view', { conversationId: id, customerId: conversation.customer.id });
+    return conversation;
+  }],
   ['POST', /^\/conversations\/([\w-]+)\/agent-messages$/, ([id], body, user) => engine.postAgentMessage(findConversation(id), asAgent(user), body.text, now())],
   ['POST', /^\/conversations\/([\w-]+)\/handoff\/accept$/, ([id], __, user) => {
     const agent = asAgent(user);
@@ -212,9 +247,22 @@ const routes = [
   ['PUT', /^\/admin\/policy$/, (_, body, user) => updatePolicy(body, asAdmin(user))],
   ['POST', /^\/admin\/policy\/reset$/, (_, __, user) => updatePolicy(POLICY_DEFAULTS, asAdmin(user))],
   ['GET', /^\/admin\/insights$/, (_, __, user) => (asAdmin(user), insights())],
+  ...reviewRoutes(asAdmin),
+  ...customerAdminRoutes(asAdmin),
 ];
 
+/** The API closes idle sessions on a timer; the mock does it lazily, before each request (seeds excepted). */
+function sweep() {
+  const at = now();
+  for (const conversation of db.conversations.values()) {
+    if (conversation.demoSeed) continue;
+    const reason = engine.dueForClosing(conversation, at);
+    if (reason) engine.closeConversation(conversation, reason, at);
+  }
+}
+
 export function handleRequest({ url, method = 'GET', body, params }, user) {
+  sweep();
   const [path, query] = url.split('?');
   const allParams = { ...Object.fromEntries(new URLSearchParams(query ?? '')), ...params };
   for (const [routeMethod, pattern, handler] of routes) {

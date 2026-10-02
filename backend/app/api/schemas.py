@@ -4,7 +4,16 @@ publishes them as OpenAPI (GET /docs, /openapi.json). Wire format is camelCase; 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-from app.conversation.constants import BotReplyKind, HandoffReason, HandoffStatus, Priority, Sender, Status, SystemEvent
+from app.conversation.constants import (
+    BotReplyKind,
+    ClosedReason,
+    HandoffReason,
+    HandoffStatus,
+    Priority,
+    Sender,
+    Status,
+    SystemEvent,
+)
 
 
 class Model(BaseModel):
@@ -20,7 +29,7 @@ class Person(Model):
 
 
 class Customer(Person):
-    email: str
+    email: str | None
     tier: str
     location: str
     customer_since: str
@@ -52,6 +61,7 @@ class MessageEvent(Model):
     reason: HandoffReason | None = None
     agent_id: str | None = None
     agent_name: str | None = None
+    closed_reason: ClosedReason | None = None
 
 
 class Message(Model):
@@ -155,6 +165,23 @@ class Copilot(Model):
     sources: list[Source]
 
 
+class SessionOutcome(Model):
+    """A past support session in brief: the customer timeline and follow-up links."""
+
+    id: str
+    subject: str | None
+    status: Status
+    created_at: int
+    closed_at: int | None
+    closed_reason: ClosedReason | None
+    handoff_reason: HandoffReason | None
+    handoff_label: str | None
+    handled_by: str | None
+    bot_answers: int
+    summary: str
+    follow_up_of: str | None = None
+
+
 class Conversation(Model):
     id: str
     customer: Customer
@@ -168,6 +195,9 @@ class Conversation(Model):
     handoff: Handoff | None
     handoff_history: list[Handoff]
     copilot: Copilot | None
+    closed_at: int | None = None
+    closed_reason: ClosedReason | None = None
+    follow_up_of: SessionOutcome | None = Field(None, description="The closed session this one follows up (agents only)")
 
 
 class SummaryCustomer(Model):
@@ -201,6 +231,8 @@ class ConversationSummary(Model):
     handoff: SummaryHandoff | None
     sentiment: float
     last_confidence: float | None
+    closed_reason: ClosedReason | None = None
+    follow_up_of: str | None = None
 
 
 # ── Who's signed in ──────────────────────────────────────────────────────────
@@ -224,9 +256,15 @@ class User(Model):
     roles: list[str]
 
 
+class PrivacyNotice(Model):
+    retention_days: int
+    notice: str
+
+
 class Me(Model):
     user: User
     customer: Customer | None = None
+    privacy: PrivacyNotice | None = Field(None, description="Shown to customers in the chat")
     agent: Agent | None = None
     admin: Admin | None = None
 
@@ -252,12 +290,20 @@ class CustomerMessageView(Model):
     sources: list[CustomerSource] = []
 
 
+class FollowUpLink(Model):
+    id: str
+    subject: str | None
+
+
 class CustomerConversation(Model):
     id: str
     status: Status
     subject: str | None
     created_at: int
     updated_at: int
+    closed_at: int | None = None
+    closed_reason: ClosedReason | None = None
+    follow_up_of: FollowUpLink | None = None
     agent: CustomerAuthor | None
     messages: list[CustomerMessageView]
 
@@ -268,6 +314,7 @@ class CustomerConversationSummary(Model):
     subject: str | None
     created_at: int
     updated_at: int
+    closed_reason: ClosedReason | None = None
     last_message: LastMessage | None
 
 
@@ -278,6 +325,60 @@ class AgentOverview(Agent):
     active_chats: int
     last_seen_at: str | None = None
     signed_in_once: bool = Field(description="Whether the Keycloak user has claimed this profile yet")
+
+
+class CustomerOverview(Customer):
+    conversations: int
+    signed_in_once: bool
+    last_seen_at: str | None = None
+
+
+class EraseRequest(Model):
+    confirm: str = Field(description="The customer's id, repeated to confirm an irreversible deletion")
+
+
+class ErasureReport(Model):
+    customer_id: str
+    conversations: int
+    traces: dict
+    identity: dict
+    complete: bool
+
+
+class ReviewItem(Model):
+    id: str
+    kind: str = Field(description="knowledge_gap | test_question")
+    status: str = Field(description="pending | approved | published | rejected")
+    question: str
+    answer: str
+    title: str
+    examples: list[str]
+    agent_answers: list[str]
+    conversation_ids: list[str]
+    count: int
+    published_path: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+
+
+class ReviewUpdate(Model):
+    title: str | None = Field(None, max_length=200)
+    question: str | None = Field(None, max_length=2000)
+    answer: str | None = Field(None, max_length=20_000)
+
+
+class AuditEntry(Model):
+    id: int
+    at: str
+    actor_id: str | None
+    actor_name: str | None
+    actor_role: str | None
+    action: str
+    conversation_id: str | None
+    customer_id: str | None
+    detail: dict
 
 
 class AgentUpdate(Model):
@@ -301,6 +402,30 @@ class Policy(Model):
 
 
 # ── Requests ─────────────────────────────────────────────────────────────────
+
+
+class WidgetSessionRequest(Model):
+    identity: str | None = Field(None, description="Identity token signed by your website's backend for a signed-in customer")
+
+
+class WidgetCustomer(Model):
+    id: str
+    name: str
+
+
+class WidgetSession(Model):
+    token: str = Field(description="Bearer token for the customer routes")
+    expires_at: int = Field(description="Epoch milliseconds")
+    kind: str = Field(description="visitor | identified")
+    customer: WidgetCustomer
+
+
+class DemoIdentityRequest(Model):
+    customer_id: str
+
+
+class StartConversation(Model):
+    follow_up_of: str | None = Field(None, description="A closed conversation of yours that this one continues")
 
 
 class CustomerMessage(Model):

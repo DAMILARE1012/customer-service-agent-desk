@@ -24,5 +24,7 @@ export function toSummary(conversation) {
     },
     sentiment: insights.sentiment.current,
     lastConfidence: insights.lastConfidence,
+    closedReason: conversation.closedReason ?? null,
+    followUpOf: conversation.followUpOf?.id ?? null,
   };
 }

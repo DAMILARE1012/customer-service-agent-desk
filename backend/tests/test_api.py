@@ -1,97 +1,8 @@
 """The HTTP contract and its access rules, with the RAG answerer replaced by a stand-in (no index, model
 or Groq key) and Keycloak replaced by a fixed signed-in user per request (token verification itself is
-tested in test_auth.py)."""
+tested in test_auth.py). The `client` fixture is in conftest.py."""
 
-import pytest
-from fastapi.testclient import TestClient
-
-from app import auth
-from app.admin import policy as admin_policy
-from app.auth import Principal
-from app.rag.answerer import Answer
-from app.rag.retriever import SearchResult
-
-SOURCE = {
-    "id": "local:help-center/refunds#0", "docId": "help-center/refunds", "title": "Refund processing times",
-    "headingPath": [], "url": "/help/refunds", "category": "Returns & refunds", "audience": "customer",
-    "text": "Refunds go back to your original payment method within 2 business days.", "alsoIn": [], "similarity": 0.84, "keywordScore": 9.1,
-}  # fmt: skip
-
-
-def person(sub, username, name, email, *roles, verified=True):
-    return Principal(sub=sub, username=username, name=name, email=email, email_verified=verified, roles=frozenset(roles))
-
-
-MAYA = person("kc-maya", "maya.chen", "Maya Chen", "maya.chen@example.com", "customer")
-SAM = person("kc-sam", "sam.patel", "Sam Patel", "sam.patel@example.com", "customer")
-JORDAN = person("kc-jordan", "jordan.okafor", "Jordan Okafor", "jordan@okafor-studio.com", "customer")
-NEWCOMER = person("kc-new", "river", "River Stone", "river@example.org", "customer")
-ALEX = person("kc-alex", "alex.rivera", "Alex Rivera", "alex.rivera@baton.example", "agent")
-PRIYA = person("kc-priya", "priya.shah", "Priya Shah", "priya.shah@baton.example", "agent")
-# Keycloak's default role makes every account a customer too; staff must still never get a customer profile.
-JADE = person("kc-jade", "jade.kim", "Jade Kim", "jade.kim@baton.example", "admin", "agent", "customer")
-
-
-async def fake_answer(question, *, history=None, generate=True, purpose="answer"):
-    retrieval = SearchResult(confidence=0.84, results=[SOURCE])
-    if not generate:
-        return Answer("skipped", retrieval)
-    if "refund" in question.lower():
-        return Answer("answered", retrieval, answer="Refunds take 2 business days.", citations=[SOURCE])
-    if "bulk" in question.lower():
-        return Answer("no_match", SearchResult(confidence=0.6, results=[]))
-    return Answer("error", retrieval, error="Groq 404: model not available")
-
-
-async def no_procedure(_):
-    return None
-
-
-class Client:
-    """TestClient whose requests are made as whoever `as_()` last selected (None = signed out)."""
-
-    def __init__(self, http: TestClient, holder: dict):
-        self.http, self.holder = http, holder
-
-    def as_(self, who: Principal | None) -> TestClient:
-        self.holder["who"] = who
-        return self.http
-
-
-@pytest.fixture()
-def client(monkeypatch):
-    import app.api.main as main
-    import app.conversation.bot as bot
-
-    monkeypatch.setattr(bot, "answer_question", fake_answer)
-    monkeypatch.setattr(bot, "find_procedure", no_procedure)
-    monkeypatch.setattr(main, "get_retriever", lambda: type("R", (), {"size": 1, "search": lambda self, *a, **k: None})())
-    holder = {"who": None}
-
-    async def signed_in():
-        if holder["who"] is None:
-            raise auth.ApiError(401, "Sign in required.")
-        return holder["who"]
-
-    main.app.dependency_overrides[auth.principal] = signed_in
-    auth._profiles.clear()
-    try:
-        with TestClient(main.app) as http:
-            yield Client(http, holder)
-    finally:
-        main.app.dependency_overrides.clear()
-        admin_policy._apply(admin_policy.DEFAULTS)
-
-
-def start(c: Client, who=MAYA) -> str:
-    res = c.as_(who).post("/me/conversations")
-    assert res.status_code == 200, res.text
-    return res.json()["id"]
-
-
-def say(c: Client, conversation_id: str, text: str, who=MAYA):
-    return c.as_(who).post(f"/me/conversations/{conversation_id}/messages", json={"text": text})
-
+from tests.support import ALEX, JADE, JORDAN, MAYA, PRIYA, SAM, say, start
 
 # ── Customers ────────────────────────────────────────────────────────────────
 
@@ -184,11 +95,10 @@ def test_agent_identity_comes_from_the_token(client):
     assert client.as_(PRIYA).post(f"/conversations/{conversation_id}/resolve").status_code == 403
 
 
-def test_me_creates_profiles_on_first_sign_in(client):
-    newcomer = client.as_(NEWCOMER).get("/me").json()
-    assert newcomer["user"]["roles"] == ["customer"]
-    assert newcomer["customer"]["id"].startswith("cus_") and newcomer["customer"]["tier"] == "standard"
-    assert newcomer.get("agent") is None
+def test_me_for_customers_and_staff(client):
+    maya = client.as_(MAYA).get("/me").json()
+    assert maya["user"]["roles"] == ["customer"] and maya["customer"]["tier"] == "plus" and maya["privacy"]
+    assert maya.get("agent") is None
 
     jade = client.as_(JADE).get("/me").json()
     assert jade["agent"]["id"] == "agt_jade" and jade["admin"]["id"] == "adm_jade"
