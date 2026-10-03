@@ -218,6 +218,11 @@ ALTER TABLE agents ADD COLUMN available boolean NOT NULL DEFAULT true;
 ALTER TABLE conversations ADD COLUMN contact jsonb;                -- {email, at}
 """
 
+# v7: when the widget reported the customer leaving (closed the page), so the chat can end on time.
+V7_PRESENCE = """
+ALTER TABLE conversations ADD COLUMN customer_left_at bigint;
+"""
+
 TABLE: dict[Kind, str] = {"customer": "customers", "agent": "agents", "admin": "admins"}
 COLUMNS: dict[Kind, dict[str, str]] = {
     "customer": {"id": "id", "keycloakId": "keycloak_id", "email": "email", "name": "name", "tier": "tier", "location": "location",
@@ -288,6 +293,7 @@ def _head(row: dict) -> dict:
         "anonymizedAt": row["anonymized_at"],
         "botTurn": row.get("bot_turn"),
         "contact": row.get("contact"),
+        "customerLeftAt": row.get("customer_left_at"),
         "handoff": row.get("current_handoff"),
         "handoffHistory": [],
         "lastMessage": {"sender": row["lm_sender"], "text": row["lm_text"], "createdAt": row["lm_at"]} if row.get("lm_sender") else None,
@@ -405,6 +411,9 @@ class PostgresRepository(Repository):
             if version < 6:
                 conn.execute(V6_AVAILABILITY)
                 conn.execute("INSERT INTO schema_version (version) VALUES (6)")
+            if version < 7:
+                conn.execute(V7_PRESENCE)
+                conn.execute("INSERT INTO schema_version (version) VALUES (7)")
 
     # ── People ──
 
@@ -648,11 +657,11 @@ class PostgresRepository(Repository):
             """UPDATE conversations SET status = %s, assignee_id = %s, assignee = %s, subject = %s, customer = %s, insights = %s,
                    copilot = %s, follow_up_of_id = %s, follow_up = %s, updated_at = %s, closed_at = %s, closed_reason = %s,
                    customer_seen_at = GREATEST(customer_seen_at, %s), trace_ids = %s, reviewed_at = %s, anonymized_at = %s,
-                   bot_turn = %s, contact = %s
+                   bot_turn = %s, contact = %s, customer_left_at = %s
                WHERE id = %s""",
             (str(c["status"]), (c["assignee"] or {}).get("id"), Jsonb(c["assignee"]), c["subject"], Jsonb(c["customer"]), Jsonb(c["insights"]),
              Jsonb(c["copilot"]), (c["followUpOf"] or {}).get("id"), Jsonb(c["followUpOf"]), c["updatedAt"], c["closedAt"], c["closedReason"],
-             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], Jsonb(c.get("botTurn")), Jsonb(c.get("contact")),
+             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], Jsonb(c.get("botTurn")), Jsonb(c.get("contact")), c.get("customerLeftAt"),
              c["id"]),
         )  # fmt: skip
         if c.get("_rewriteMessages"):  # anonymisation rewrites the transcript in place
@@ -691,6 +700,16 @@ class PostgresRepository(Repository):
                 (now, conversation_id, now - 15_000),
             )
         )
+
+    async def touch_customer(self, conversation_id: str, customer_id: str, now: int) -> dict | None:
+        row = await self._run(
+            lambda conn: conn.execute(
+                """UPDATE conversations SET customer_seen_at = GREATEST(COALESCE(customer_seen_at, 0), %s)
+                   WHERE id = %s AND customer_id = %s AND status <> 'resolved' RETURNING status, customer_left_at""",
+                (now, conversation_id, customer_id),
+            ).fetchone()
+        )
+        return {"status": row["status"], "customerLeftAt": row["customer_left_at"]} if row else None
 
     async def count_active(self, agent_id: str) -> int:
         row = await self._run(

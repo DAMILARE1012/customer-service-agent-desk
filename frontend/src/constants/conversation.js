@@ -33,6 +33,8 @@ export const SYSTEM_EVENT = Object.freeze({
   REOPENED: 'reopened',
   PRIORITY_RAISED: 'priority_raised', // agents only: something added while waiting made it more urgent
   CONTACT_LEFT: 'contact_left', // agents only: the customer left an email for the reply
+  CUSTOMER_LEFT: 'customer_left', // agents only: the customer closed the page
+  CUSTOMER_RETURNED: 'customer_returned', // agents only: …and came back before the chat closed
 });
 
 // Why a conversation (a support session) ended. Closed conversations never reopen: the customer
@@ -42,13 +44,15 @@ export const CLOSED_REASON = Object.freeze({
   ENDED_BY_CUSTOMER: 'ended_by_customer',
   INACTIVE: 'inactive',
   ABANDONED: 'abandoned',
+  LEFT: 'left', // left while the bot was helping (closed the page, or no sign of life)
 });
 
 export const CLOSED_REASON_META = {
   [CLOSED_REASON.RESOLVED]: { label: 'Resolved', customerText: 'Conversation closed', tone: 'emerald' },
   [CLOSED_REASON.ENDED_BY_CUSTOMER]: { label: 'Ended by customer', customerText: 'You ended the chat', tone: 'slate' },
   [CLOSED_REASON.INACTIVE]: { label: 'Closed — inactive', customerText: 'Chat closed after a period of inactivity', tone: 'slate' },
-  [CLOSED_REASON.ABANDONED]: { label: 'Customer left', customerText: 'Chat closed — we missed you. Start a new chat any time', tone: 'amber' },
+  [CLOSED_REASON.ABANDONED]: { label: 'Left while waiting', customerText: 'Chat closed — we missed you. Start a new chat any time', tone: 'amber' },
+  [CLOSED_REASON.LEFT]: { label: 'Customer left', customerText: 'Chat closed after you left. Start a new chat any time', tone: 'slate' },
 };
 
 // How the bot classified its own reply.

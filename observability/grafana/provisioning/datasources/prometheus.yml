@@ -8,4 +8,4 @@ datasources:
     isDefault: true
     editable: false
     jsonData:
-      timeInterval: 15s
+      timeInterval: 2s  # the API's scrape interval: keeps $__rate_interval windows short (~8 s)

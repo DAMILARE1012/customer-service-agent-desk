@@ -13,6 +13,7 @@ CLOSED_TEXT = {
     ClosedReason.ENDED_BY_CUSTOMER: "You ended the chat",
     ClosedReason.INACTIVE: "Chat closed after a period of inactivity",
     ClosedReason.ABANDONED: "Chat closed — we missed you. Start a new chat any time",
+    ClosedReason.LEFT: "Chat closed after you left. Start a new chat any time",
 }
 
 

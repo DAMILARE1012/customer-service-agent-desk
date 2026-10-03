@@ -81,6 +81,7 @@ def create_conversation(customer: dict, now: int, follow_up_of: dict | None = No
         "copilot": None,
         "botTurn": None,  # {messageId, startedAt} while the bot answers — see engine.py
         "contact": None,  # {email, at}: where to send the reply if the customer has left (see team.py)
+        "customerLeftAt": None,  # when the widget said the customer closed the page (see sessions.py)
     }
 
 
@@ -92,6 +93,7 @@ def track_signals(conversation: dict, message: dict) -> float:
     # Smoothed so one sharp message registers but a single "thanks" doesn't erase frustration.
     current = sentiment if not trend else round2(sentiment * 0.7 + trend[-1] * 0.3)
     insights["sentiment"] = {"current": current, "trend": [*trend, current]}
+    insights.pop("idleNudgeAt", None)  # they wrote: a later silence earns a new "still there?"
     insights["entities"] = merge_entities(insights["entities"], extract_entities(message["text"], message["id"]))
     return current
 
@@ -155,6 +157,34 @@ def note_while_waiting(conversation: dict, message: dict, sentiment: float, now:
         add_system_event(conversation, SystemEvent.PRIORITY_RAISED, f"Priority raised to {priority} — {why}", now, priority=str(priority))
     if len(added) == 1:
         add_bot_message(conversation, WAITING_ACK, now, {"kind": BotReplyKind.SMALL_TALK, "confidence": None, "sources": []})
+
+
+IDLE_NUDGE = "Are you still there? I’ll close this chat in a few minutes if there’s nothing else — you can always start a new one."
+AGENT_ONLY_PRESENCE = (Status.HANDOFF_PENDING, Status.AGENT_ACTIVE)  # the bot doesn't need telling
+
+
+def customer_left(conversation: dict, now: int) -> None:
+    """The widget reported the page closing. Not a close yet: they may be moving to another page."""
+    if conversation.get("customerLeftAt") or conversation["status"] == Status.RESOLVED:
+        return
+    conversation["customerLeftAt"] = now
+    if conversation["status"] in AGENT_ONLY_PRESENCE:
+        add_system_event(conversation, SystemEvent.CUSTOMER_LEFT, "Customer left the chat", now)
+
+
+def customer_returned(conversation: dict, now: int) -> None:
+    if not conversation.get("customerLeftAt") or conversation["status"] == Status.RESOLVED:
+        return
+    conversation["customerLeftAt"] = None
+    conversation["customerSeenAt"] = now
+    if conversation["status"] in AGENT_ONLY_PRESENCE:
+        add_system_event(conversation, SystemEvent.CUSTOMER_RETURNED, "Customer is back", now)
+
+
+def idle_nudge(conversation: dict, now: int) -> None:
+    """Once per silence, before the idle close: give a quiet customer the chance to say they're still there."""
+    add_bot_message(conversation, IDLE_NUDGE, now, {"kind": BotReplyKind.SMALL_TALK, "confidence": None, "sources": [], "nudge": True})
+    conversation["insights"]["idleNudgeAt"] = now
 
 
 def last_open_question(conversation: dict) -> str | None:

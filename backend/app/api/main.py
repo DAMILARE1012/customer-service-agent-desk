@@ -316,7 +316,26 @@ async def my_conversation(conversation_id: str, customer: dict = Depends(current
     conversation = await store.get_own(conversation_id, customer)
     if conversation["status"] != Status.RESOLVED:
         await store.mark_seen(conversation_id)  # presence: the chat window is open
+        if conversation.get("customerLeftAt"):  # they'd closed the page and are back in time
+            async with store.own_transaction(conversation_id, customer) as conversation:
+                engine.customer_returned(conversation, now_ms())
     return await _customer_view(conversation)
+
+
+@app.post("/me/conversations/{conversation_id}/presence", response_model=schemas.PresenceResult, tags=["customer"], name="presence")
+async def presence(conversation_id: str, body: schemas.PresenceUpdate, customer: dict = Depends(current_customer)):
+    """The widget's heartbeat ("here", every 15 s while the page is open — panel open or minimised) and its
+    goodbye ("left", when the page closes). Conversations end from these signals: see conversation/sessions.py."""
+    now = now_ms()
+    if body.state == "here":
+        seen = await repository().touch_customer(conversation_id, customer["id"], now)  # no lock: cheap, frequent
+        if seen and seen["customerLeftAt"]:
+            async with store.own_transaction(conversation_id, customer) as conversation:
+                engine.customer_returned(conversation, now)
+        return {"status": seen["status"] if seen else None}
+    async with store.own_transaction(conversation_id, customer) as conversation:
+        engine.customer_left(conversation, now)
+    return {"status": None if conversation["status"] == Status.RESOLVED else conversation["status"]}
 
 
 @app.post("/me/conversations/{conversation_id}/end", response_model=schemas.CustomerConversation, tags=["customer"], name="end_conversation")

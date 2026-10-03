@@ -109,6 +109,8 @@ def to_summary(conversation: dict) -> dict:
         "lastConfidence": conversation["insights"]["lastConfidence"],
         "closedReason": conversation.get("closedReason"),
         "followUpOf": (conversation.get("followUpOf") or {}).get("id"),
+        "customerSeenAt": conversation.get("customerSeenAt"),
+        "customerLeftAt": conversation.get("customerLeftAt"),
     }
 
 

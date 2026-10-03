@@ -54,4 +54,4 @@ npm start               # everything, in order — then open http://localhost:51
 
 No time for the full stack? `cd frontend && npm install && npm run dev` runs the app on an in-browser demo backend (leave `VITE_API_URL` and `VITE_KEYCLOAK_URL` empty).
 
-**More:** [commands, accounts, embedding the widget, deploying, Vault, results](docs/guide.md) · [load testing](loadtest/README.md)
+**More:** [commands, accounts, embedding the widget, Vault, results](docs/guide.md) · [deploying on AWS](docs/deploy-aws.md) · [load testing](loadtest/README.md)

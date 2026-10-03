@@ -207,6 +207,14 @@ const routes = [
     if (conversation.status !== CONVERSATION_STATUS.RESOLVED) conversation.customerSeenAt = now(); // presence
     return viewFor(conversation);
   }],
+  ['POST', /^\/me\/conversations\/([\w-]+)\/presence$/, ([id], body, user) => {
+    // The mock has no sweeper; it records presence so the desk's indicator works in the demo.
+    const conversation = ownConversation(id, asCustomer(user));
+    if (conversation.status === CONVERSATION_STATUS.RESOLVED) return { status: null };
+    if (body?.state === 'left') conversation.customerLeftAt ??= now();
+    else Object.assign(conversation, { customerSeenAt: now(), customerLeftAt: null });
+    return { status: conversation.status };
+  }],
   ['POST', /^\/me\/conversations\/([\w-]+)\/end$/, ([id], __, user) =>
     viewFor(engine.closeConversation(ownConversation(id, asCustomer(user)), CLOSED_REASON.ENDED_BY_CUSTOMER, now()))],
   ['POST', /^\/me\/conversations\/([\w-]+)\/messages$/, ([id], body, user) => {

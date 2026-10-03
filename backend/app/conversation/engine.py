@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 create_conversation = lifecycle.create_conversation
 return_to_bot = lifecycle.return_to_bot
 leave_contact = lifecycle.leave_contact
+customer_left = lifecycle.customer_left
+customer_returned = lifecycle.customer_returned
 
 
 def close_conversation(conversation: dict, reason: ClosedReason, now: int, actor: dict | None = None) -> dict:
@@ -87,6 +89,7 @@ def accept_customer_message(conversation: dict, text: str, now: int) -> dict | N
         # Sessions don't reopen: a returning customer starts fresh (optionally as a linked follow-up).
         raise ApiError(409, "This conversation has ended. Start a new one — you can link it to this one as a follow-up.")
     conversation["customerSeenAt"] = now
+    lifecycle.customer_returned(conversation, now)  # writing means they're here
     message = lifecycle.add_message(conversation, {"sender": Sender.CUSTOMER, "text": text, "createdAt": now})
     conversation["subject"] = conversation["subject"] or truncate(text, 70)
     sentiment = lifecycle.track_signals(conversation, message)

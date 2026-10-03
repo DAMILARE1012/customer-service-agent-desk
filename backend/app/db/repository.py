@@ -78,7 +78,7 @@ PRIORITY_RANK = {"urgent": 2, "high": 1, "normal": 0}  # the desk takes higher p
 
 CONVERSATION_DEFAULTS = {
     "closedAt": None, "closedReason": None, "followUpOf": None, "customerSeenAt": None,
-    "traceIds": [], "reviewedAt": None, "anonymizedAt": None, "botTurn": None, "contact": None,
+    "traceIds": [], "reviewedAt": None, "anonymizedAt": None, "botTurn": None, "contact": None, "customerLeftAt": None,
 }  # fmt: skip
 
 
@@ -190,6 +190,11 @@ class Repository(ABC):
 
     @abstractmethod
     async def mark_customer_seen(self, conversation_id: str, now: int) -> None: ...
+
+    @abstractmethod
+    async def touch_customer(self, conversation_id: str, customer_id: str, now: int) -> dict | None:
+        """The widget's heartbeat: record the customer as present on their own open conversation, cheaply (no
+        lock). Returns {"status", "customerLeftAt"}, or None if it isn't theirs or has closed."""
 
     @abstractmethod
     async def count_active(self, agent_id: str) -> int: ...
@@ -376,6 +381,13 @@ class MemoryRepository(Repository):
         stored = self.conversations.get(conversation_id)
         if stored and stored["status"] in OPEN_STATUSES:
             stored["customerSeenAt"] = now
+
+    async def touch_customer(self, conversation_id: str, customer_id: str, now: int) -> dict | None:
+        stored = self.conversations.get(conversation_id)
+        if not stored or stored["customer"]["id"] != customer_id or stored["status"] not in OPEN_STATUSES:
+            return None
+        stored["customerSeenAt"] = max(stored.get("customerSeenAt") or 0, now)
+        return {"status": stored["status"], "customerLeftAt": stored.get("customerLeftAt")}
 
     async def count_active(self, agent_id: str) -> int:
         return sum(1 for c in self.conversations.values() if c["status"] == "agent_active" and (c["assignee"] or {}).get("id") == agent_id)

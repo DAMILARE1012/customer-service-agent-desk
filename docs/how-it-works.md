@@ -32,7 +32,23 @@ Agents hear about new handoffs in the desk (a chime — a different one for urge
 
 ## Sessions
 
-A conversation is one support session and never reopens. It closes when an agent resolves it, the customer ends it, nobody writes for 30 minutes, or a customer waiting for an agent has left — unless we can answer them by email, in which case it waits up to `OFFLINE_FOLLOWUP_DAYS`. A customer has at most one live session; reloading rejoins it. **Follow up on this** starts a new session linked to the old one — the agent sees the link and the customer’s timeline; the bot only ever sees the current session.
+A conversation is one support session and never reopens. While the shop page is open the widget says *here* every 15 s — panel open or minimised — and *left* when the page closes, so the API knows whether anyone is still there. Every session ends one of these ways:
+
+| What happens | With the bot | Waiting for an agent | With an agent |
+|---|---|---|---|
+| Customer clicks **End chat** (and confirms) | ended | ended | ended |
+| Customer closes the page and isn’t back within 60 s | closed: *left* | closed: *abandoned* | agent sees “left” — the agent decides |
+| No heartbeat for 3 min (crash, lost network) | closed: *left* | closed: *abandoned* after 10 min | agent sees “left” |
+| Page open, nobody writes for 30 min | “Are you still there?” at 25 min, then closed: *inactive* | — | closed: *inactive* |
+| Agent resolves it | — | — | resolved |
+
+Coming back within the grace — the next page of the shop, a reload — rejoins the same chat. A customer who left an email while waiting isn’t closed as abandoned: the chat waits up to `OFFLINE_FOLLOWUP_DAYS` for the reply. The desk shows each customer as **Here**, **Away** or **Left 2 min ago**, and the thread records when they leave and come back. The timings are settings in [`.env.example`](../.env.example).
+
+| End chat asks first | The desk shows who’s still there |
+|---|---|
+| ![The widget asking “End this chat?”](screenshots/widget-end-confirm.png) | ![The agent desk showing Here, Away and Left 4m ago](screenshots/agent-customer-presence.png) |
+
+A customer has at most one live session; reloading rejoins it. **Follow up on this** starts a new session linked to the old one — the agent sees the link and the customer’s timeline; the bot only ever sees the current session.
 
 **Customers don’t sign in.** A guest gets an anonymous *visitor* session. If the shopper is signed in to the website, its backend vouches for them with a short-lived identity token, so their chats join one customer record across devices ([embedding the widget](guide.md#adding-the-widget-to-a-website)).
 

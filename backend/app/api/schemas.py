@@ -1,6 +1,8 @@
 """The API contract with the React desk. FastAPI validates every response against these models and
 publishes them as OpenAPI (GET /docs, /openapi.json). Wire format is camelCase; Python uses snake_case."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -251,6 +253,8 @@ class ConversationSummary(Model):
     last_confidence: float | None
     closed_reason: ClosedReason | None = None
     follow_up_of: str | None = None
+    customer_seen_at: int | None = Field(None, description="Last sign of the customer (the widget's heartbeat)")
+    customer_left_at: int | None = Field(None, description="When the widget said the customer closed the page")
 
 
 # ── Who's signed in ──────────────────────────────────────────────────────────
@@ -461,6 +465,14 @@ class StartConversation(Model):
 
 class CustomerMessage(Model):
     text: str = Field(min_length=1, max_length=4000)
+
+
+class PresenceUpdate(Model):
+    state: Literal["here", "left"] = Field(description="here: the page is open (every 15 s); left: it's closing")
+
+
+class PresenceResult(Model):
+    status: Status | None = Field(description="The conversation's status; None once it has closed")
 
 
 class ContactRequest(Model):

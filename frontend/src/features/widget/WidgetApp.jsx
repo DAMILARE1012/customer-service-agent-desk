@@ -7,6 +7,7 @@ import { useGetMyConversationsQuery } from '../chat/chatApi.js';
 import { isOpen } from '../chat/chatStatus.js';
 import { Launcher } from './components/Launcher.jsx';
 import { WidgetPanel } from './components/WidgetPanel.jsx';
+import { usePresence } from './usePresence.js';
 import { forgetSession, sessionFor, storedSession } from './widgetSession.js';
 
 const asCustomer = (session) => ({ sub: session.customer.id, name: session.customer.name, email: null, roles: ['customer'] });
@@ -89,7 +90,10 @@ export function WidgetApp({ identity = null, demoUser = null, onState, command =
 
   // A reply that arrived while the chat was minimised shows as a dot on the launcher.
   const { data: conversations = [] } = useGetMyConversationsQuery(undefined, { skip: !session, pollingInterval: open ? 0 : 10_000 });
-  const last = conversations.find(isOpen)?.lastMessage;
+  const live = conversations.find(isOpen);
+  const last = live?.lastMessage;
+  const getToken = useCallback(() => sessionRef.current?.token ?? null, []);
+  usePresence(live?.id, getToken); // "here" every 15 s while the page is open — panel open or minimised
   const unread = !open && Boolean(last && last.sender !== 'customer' && last.createdAt > seenAt);
 
   useEffect(() => {

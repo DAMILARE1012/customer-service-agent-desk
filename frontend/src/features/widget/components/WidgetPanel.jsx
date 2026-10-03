@@ -85,6 +85,7 @@ function Thread({ conversationId, onSend, sending, onStart, starting }) {
   const open = conversation ? isOpen(conversation) : false;
   useGetMyConversationQuery(conversationId, { pollingInterval: POLLING_INTERVAL_MS, skip: !open });
   const [endConversation, endState] = useEndConversationMutation();
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
   const messages = conversation?.messages ?? [];
   const botTyping = sending && conversation?.status === CONVERSATION_STATUS.BOT_ACTIVE;
   const scrollRef = useAutoScroll(messages.length + (botTyping ? 1 : 0));
@@ -101,10 +102,21 @@ function Thread({ conversationId, onSend, sending, onStart, starting }) {
       {(conversation.followUpOf || open) && (
         <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-1.5 text-[11px] text-slate-500">
           <span className="truncate">{conversation.followUpOf ? `Following up on “${conversation.followUpOf.subject ?? 'an earlier chat'}”` : 'Conversation in progress'}</span>
-          {open && (
-            <button type="button" onClick={() => endConversation(conversationId)} disabled={endState.isLoading} className="shrink-0 font-medium text-slate-500 hover:text-rose-600">
+          {open && !confirmingEnd && (
+            <button type="button" onClick={() => setConfirmingEnd(true)} className="shrink-0 font-medium text-slate-500 hover:text-rose-600">
               End chat
             </button>
+          )}
+          {open && confirmingEnd && (
+            <span className="flex shrink-0 items-center gap-2" role="group" aria-label="End this chat?">
+              <span className="text-slate-600">End this chat?</span>
+              <button type="button" onClick={() => endConversation(conversationId)} disabled={endState.isLoading} className="font-semibold text-rose-600 hover:text-rose-500">
+                End
+              </button>
+              <button type="button" onClick={() => setConfirmingEnd(false)} className="font-medium text-slate-500 hover:text-slate-700">
+                Keep chatting
+              </button>
+            </span>
           )}
         </div>
       )}

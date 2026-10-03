@@ -79,6 +79,7 @@ def test_idle_sessions_close_themselves(client):
 
     later = max(c["updatedAt"] for c in repository().conversations.values()) + int(settings.session_idle_minutes * MINUTE)
     repository().conversations.get(present)["customerSeenAt"] = later - MINUTE  # still has the chat open
+    repository().conversations.get(bot_idle)["customerSeenAt"] = later - MINUTE  # on the page, but quiet → inactive, not left
     closed = asyncio.run(sessions.sweep(now=later, started_at=0))
 
     reasons = {c["id"]: c["closedReason"] for c in closed}

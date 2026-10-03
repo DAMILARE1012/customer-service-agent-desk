@@ -69,7 +69,7 @@ Two images, configured only by environment variables (nothing secret is baked in
 | `baton-api` | `backend/Dockerfile` | Python 3.12 slim, CPU-only PyTorch, non-root. Mount `/app/data` (index + models) and `/app/content` (articles). `API_WORKERS` sets processes; see `.env.example` for the worker health check, math threads per worker and keep-alive (keep it above your load balancer’s idle timeout). |
 | `baton-web` | `frontend/Dockerfile` | nginx (unprivileged). `VITE_*` settings are read **when the container starts**, so one image serves anyone’s URLs. `WIDGET_FRAME_ANCESTORS` lists the sites allowed to embed the chat widget; the staff app can’t be framed. |
 
-**A sensible AWS shape.** A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, Vault, and Postgres (RDS). Then tighten: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
+**On AWS:** follow the step-by-step [AWS deployment runbook](deploy-aws.md). In short — A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, Vault, and Postgres (RDS). Then tighten: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
 
 ## Secrets: HashiCorp Vault
 

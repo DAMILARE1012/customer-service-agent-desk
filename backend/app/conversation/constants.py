@@ -33,6 +33,8 @@ class SystemEvent(StrEnum):
     RESOLVED = "resolved"  # any close; the event's closedReason says why
     PRIORITY_RAISED = "priority_raised"  # something the customer added while waiting made it more urgent (agents only)
     CONTACT_LEFT = "contact_left"  # the customer left an email for the reply (agents only)
+    CUSTOMER_LEFT = "customer_left"  # the customer closed the page (agents only)
+    CUSTOMER_RETURNED = "customer_returned"  # …and came back before the chat closed (agents only)
     REOPENED = "reopened"  # legacy: closed conversations no longer reopen
 
 
@@ -99,6 +101,7 @@ class ClosedReason(StrEnum):
     ENDED_BY_CUSTOMER = "ended_by_customer"
     INACTIVE = "inactive"  # nobody wrote for SESSION_IDLE_MINUTES
     ABANDONED = "abandoned"  # the customer left while waiting for an agent
+    LEFT = "left"  # the customer left while the bot was helping (closed the page, or no sign of life)
 
 
 # The agent-facing note added to the transcript when a session closes.
@@ -107,6 +110,7 @@ CLOSED_NOTE = {
     ClosedReason.ENDED_BY_CUSTOMER: "The customer ended the chat",
     ClosedReason.INACTIVE: "Closed after {minutes} minutes without activity",
     ClosedReason.ABANDONED: "The customer left before an agent joined",
+    ClosedReason.LEFT: "The customer left the chat",
 }
 
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Avatar, Badge, Icon } from '../../../components/ui/index.js';
 import { CLOSED_REASON_META, CUSTOMER_TIER_META } from '../../../constants/conversation.js';
+import { CustomerPresence } from '../../conversations/components/CustomerPresence.jsx';
 import { StatusBadge } from '../../conversations/components/StatusBadge.jsx';
 import { ConversationActions } from '../../handoff/components/ConversationActions.jsx';
 import { TranscriptDrawer } from './TranscriptDrawer.jsx';
@@ -35,6 +36,7 @@ export function ThreadHeader({ conversation }) {
             <h2 className="truncate text-sm font-semibold text-slate-900">{customer.name}</h2>
             <Badge tone={tier.tone}>{tier.label}</Badge>
             <StatusBadge status={status} />
+            <CustomerPresence conversation={conversation} />
           </div>
           <p className="truncate text-xs text-slate-500">{subject ?? customer.email}</p>
           {conversation.followUpOf && <FollowUpOf previous={conversation.followUpOf} />}

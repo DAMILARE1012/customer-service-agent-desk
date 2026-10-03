@@ -6,6 +6,7 @@ import { SOLID_TONES } from '../../../components/ui/tones.js';
 import { formatRelative } from '../../../utils/format.js';
 import { HandoffReasonBadge } from '../../handoff/components/HandoffReasonBadge.jsx';
 import { WaitTimer } from '../../handoff/components/WaitTimer.jsx';
+import { CustomerPresence } from './CustomerPresence.jsx';
 import { StatusBadge } from './StatusBadge.jsx';
 
 const SENDER_PREFIX = { [SENDER.BOT]: 'Bot: ', [SENDER.AGENT]: 'Agent: ' };
@@ -42,6 +43,7 @@ function ConversationListItemBase({ conversation, selected, onSelect, now }) {
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {pending ? <HandoffReasonBadge reason={handoff.reason} /> : <StatusBadge status={status} />}
+            <CustomerPresence conversation={conversation} now={now} compact />
             {pending && handoff.offline && (
               <span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-amber-700" title="Arrived while nobody was available">
                 <Icon name="moon" className="size-3" />

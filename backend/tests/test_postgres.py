@@ -69,7 +69,7 @@ def test_migrates_a_v1_database_of_documents():
 
     run(check())
     with psycopg.connect(URL) as conn:
-        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5, 6]
+        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7]
         assert conn.execute("SELECT count(*) FROM conversation_events WHERE conversation_id = %s", (legacy["id"],)).fetchone()[0] == 1
 
 
@@ -178,6 +178,18 @@ def test_presence_queue_position_and_typical_wait():
                 async with repo.transaction(i) as locked:
                     locked["handoff"]["acceptedAt"] = locked["handoff"]["requestedAt"] + (n + 1) * 60_000
             assert await repo.typical_handoff_wait_ms(since=0) == 120_000
+
+            # The widget's heartbeat, and the time a customer left, round-trip
+            first = ids[0]
+            async with repo.transaction(first) as locked:
+                locked["customerLeftAt"] = 5_000
+            assert await repo.touch_customer(first, "cus_q0", 6_000) == {"status": "handoff_pending", "customerLeftAt": 5_000}
+            assert await repo.touch_customer(first, "cus_q1", 6_000) is None  # not theirs
+            assert (await repo.get_conversation(first))["customerSeenAt"] == 6_000
+            async with repo.transaction(first) as locked:
+                locked["customerLeftAt"] = None
+                locked["status"] = "resolved"
+            assert await repo.touch_customer(first, "cus_q0", 7_000) is None  # closed
         finally:
             await repo.close()
 

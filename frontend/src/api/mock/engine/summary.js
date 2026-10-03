@@ -29,5 +29,7 @@ export function toSummary(conversation) {
     lastConfidence: insights.lastConfidence,
     closedReason: conversation.closedReason ?? null,
     followUpOf: conversation.followUpOf?.id ?? null,
+    customerSeenAt: conversation.customerSeenAt ?? null,
+    customerLeftAt: conversation.customerLeftAt ?? null,
   };
 }

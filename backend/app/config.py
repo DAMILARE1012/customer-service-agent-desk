@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     session_idle_minutes: float = Field(30, gt=0)  # bot or agent chat with no new message → closed (inactive)
     session_abandon_minutes: float = Field(10, gt=0)  # customer gone while waiting for an agent → closed (abandoned)
     session_sweep_seconds: float = Field(60, ge=5)  # how often idle sessions are checked
+    # Leaving (see conversation/sessions.py). The widget says "here" every 15 s while the page is open
+    # (panel open or minimised) and "left" when the page closes.
+    customer_left_grace_seconds: float = Field(60, ge=5)  # after "left": time to come back (next page, reload)
+    customer_gone_seconds: float = Field(180, ge=30)  # no sign of life this long = gone (crash, lost signal)
+    session_nudge_minutes: float = Field(5, ge=0)  # bot asks "still there?" this long before the idle close; 0 = never
 
     # ── Data rules and the review pipeline ─────────────────────────────────
     retention_days: int = Field(365, ge=0)  # closed transcripts are wiped after this; 0 keeps them forever
