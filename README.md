@@ -92,7 +92,7 @@ npm run dev                       # http://localhost:5173 → be Alex or Jade, o
 **Full stack.** Needs Node 20+, Python 3.12+ with [uv](https://docs.astral.sh/uv/), Docker Desktop and a [Groq API key](https://console.groq.com/keys).
 
 1. `cp .env.example .env` and replace every `change-me` (the file explains each setting). Set `GROQ_API_KEY`, `VITE_API_URL=http://localhost:8787` and `VITE_KEYCLOAK_URL=http://localhost:8080`.
-2. `npm run infra:up` — Keycloak (:8080) and Postgres (:5433); the realm with the staff roles and demo staff is imported on first start.
+2. `npm run infra:up` — Postgres (:5433), Keycloak (:8080), Vault (:8200) and Mailpit (:8025). The first start imports the realm (staff roles and demo staff) and puts the API’s secrets from `.env` into Vault.
 3. `cd backend && uv sync && cd ..` then `npm run ingest` — the first build downloads the data and embeds ~24,000 chunks on the CPU (about an hour, resumable).
 4. `npm run api` and `npm run dev` in two terminals. Chat as a customer at http://localhost:5173/demo-store; sign in to the staff app at http://localhost:5173 (see [Accounts](#accounts)).
 5. Optional: `npm run obs:up` for Langfuse (:3000), Grafana (:3001) and Prometheus (:9092).
@@ -114,7 +114,8 @@ Already built the index from source? Copy it into the volume instead of re-inges
 | `npm run ingest` | Build or update the knowledge index |
 | `npm run eval` · `npm run eval:rag` | Retrieval metrics · end-to-end Langfuse experiment (`-- --include-reviewed` adds approved test questions) |
 | `npm test` | Backend tests |
-| `npm run infra:up` / `infra:down` · `npm run obs:up` / `obs:down` | Keycloak + Postgres + Mailpit · monitoring stack |
+| `npm run infra:up` / `infra:down` · `npm run obs:up` / `obs:down` | Postgres, Keycloak, Vault, Mailpit · monitoring stack |
+| `npm run vault:seed` | Copy the API’s secrets from `.env` into Vault again (after changing them) |
 | `npm run app:up` / `app:down` · `app:logs` · `app:ingest` | The whole app as containers · their logs · build the index in Docker |
 
 ## Adding the widget to a website
@@ -151,6 +152,7 @@ All passwords live in **one block at the top of `.env`**. Run `npm run accounts`
 | Langfuse | http://localhost:3000 | `LANGFUSE_INIT_USER_EMAIL` | `LANGFUSE_INIT_USER_PASSWORD` |
 | Grafana | http://localhost:3001 | `GRAFANA_ADMIN_USER` | `GRAFANA_ADMIN_PASSWORD` |
 | Mailpit (every email the app sends) | http://localhost:8025 | none | — |
+| Vault (the API’s secrets) | http://localhost:8200 | method: Token | root token in `infra/vault/local/init.txt` |
 
 Keycloak holds staff only: add agents in its admin console and give them the `agent` role. The demo password applies when Keycloak first imports the realm; afterwards, change passwords there.
 
@@ -163,9 +165,9 @@ Two images, configured only by environment variables (nothing secret is baked in
 | `baton-api` | `backend/Dockerfile` | Python 3.12 slim, CPU-only PyTorch, runs as a non-root user. Mount `/app/data` (index + models) and `/app/content` (articles). `API_WORKERS` sets processes; the app is built to run as several. |
 | `baton-web` | `frontend/Dockerfile` | nginx (unprivileged). `VITE_*` settings are read **when the container starts**, so one image serves anyone’s URLs. `WIDGET_FRAME_ANCESTORS` lists the sites allowed to embed the chat widget; the staff app can’t be framed. |
 
-**Secrets.** The app reads plain environment variables, so any secret store works. On AWS, **SSM Parameter Store** (SecureString — free for standard parameters) or **Secrets Manager** (rotation, about $0.40 per secret a month) injected by ECS task definitions is the simplest fit; HashiCorp Vault is worth it only if you already run it or span several clouds — otherwise it’s one more stateful service to operate and unseal.
+**Secrets: HashiCorp Vault.** The API’s secrets (Groq key, widget secrets, Keycloak service-account secret, Langfuse keys, SMTP password, webhook URL) live in Vault at `secret/baton/api`. At startup the API logs in with **AppRole** under a policy that can read that one path and nothing else, and it refuses to start if Vault is configured but unreachable. `npm run infra:up` runs Vault as a real server (not `-dev` mode); a one-shot `vault-init` container initialises and unseals it, sets up the policy and AppRole, and the first time copies the secrets from `.env` (`npm run vault:seed` re-copies them). Locally the unseal key and root token sit in `infra/vault/local/` (git-ignored) — treat that folder like `.env`. In production, use KMS auto-unseal (the `seal "awskms"` stanza in `infra/vault/config/vault.hcl`), raft storage across three nodes, TLS, and the AWS IAM auth method instead of a secret_id on disk. Infrastructure passwords (Postgres, Keycloak) stay with Docker/RDS because those start before Vault. Without `VAULT_ADDR`, the API simply reads environment variables.
 
-**A sensible AWS shape.** A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, and Postgres (RDS). Then tighten for production: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
+**A sensible AWS shape.** A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, Vault, and Postgres (RDS). Then tighten for production: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
 
 ## Tech stack
 
@@ -173,6 +175,7 @@ Two images, configured only by environment variables (nothing secret is baked in
 |---|---|
 | Frontend | React 19 · Vite 8 · Redux Toolkit 2 (RTK Query) · Tailwind CSS 4 · keycloak-js · embeddable widget (iframe + `postMessage`) |
 | API | Python 3.12 · FastAPI · Pydantic 2 · PyJWT · psycopg 3 |
+| Secrets | HashiCorp Vault 1.20 — KV v2, AppRole login, read-only policy for the API |
 | Identity | Keycloak 26 for staff (realm `baton`, roles `agent` / `admin`) · signed widget sessions and website identity tokens for customers |
 | Database | PostgreSQL 17 — versioned schema, row-locked conversation transactions |
 | Retrieval | sentence-transformers `bge-small-en-v1.5` (local CPU) · BM25 · reciprocal rank fusion |
@@ -201,15 +204,15 @@ A no-match threshold of 0.70 catches 98% of off-topic questions while flagging 5
 
 ```
 frontend/       React app — features/widget (customer chat), features/demoStore, desk and admin; public/widget.js (embed script) · Dockerfile + docker/ (nginx, runtime config)
-backend/        FastAPI app (uv) — api/, auth.py, db/, conversation/, team.py (hours, presence, queue), notify/ (email, webhook, alerts), rag/, ingest/, review/, privacy/, eval/ · Dockerfile
-infra/          compose file (Postgres, Keycloak, Mailpit; the app itself with the "app" profile), realm import, database init
+backend/        FastAPI app (uv) — api/, auth.py, secrets.py (Vault), db/, conversation/, team.py (hours, presence, queue), notify/ (email, webhook, alerts), rag/, ingest/, review/, privacy/, eval/ · Dockerfile
+infra/          compose file (Postgres, Keycloak, Vault, Mailpit; the app itself with the "app" profile), realm import, Vault config/policy/init, database init
 observability/  Langfuse + Prometheus + Grafana: compose file, dashboard, alert rules
 content/        your own Markdown help-centre articles (published review articles land here)
 docs/           architecture diagram (draw.io) and screenshots
 scripts/        accounts.mjs (npm run accounts)
 ```
 
-`npm test` runs 113 backend tests with no network or keys; 7 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
+`npm test` runs 119 backend tests with no network or keys; 7 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
 
 ## Limitations
 

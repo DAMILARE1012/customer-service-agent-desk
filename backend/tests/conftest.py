@@ -19,6 +19,7 @@ def _isolated_settings():
     settings.widget_demo_identity = True
     settings.online_eval_sample_rate = 0
     settings.database_url = ""  # in-memory storage, seeded with the demo profiles
+    settings.vault_addr = ""  # secrets from the test settings, never a real Vault
     settings.seed_demo_data = True
     yield
 

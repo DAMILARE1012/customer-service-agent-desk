@@ -15,6 +15,7 @@
     "infra:down": "docker compose --env-file .env -f infra/docker-compose.yml down",
     "infra:ps": "docker compose --env-file .env -f infra/docker-compose.yml ps",
     "infra:logs": "docker compose --env-file .env -f infra/docker-compose.yml logs -f --tail=100",
+    "vault:seed": "docker compose --env-file .env -f infra/docker-compose.yml run --rm -e VAULT_SEED=force vault-init",
     "app:up": "docker compose --env-file .env -f infra/docker-compose.yml --profile app up -d --build",
     "app:down": "docker compose --env-file .env -f infra/docker-compose.yml --profile app down",
     "app:logs": "docker compose --env-file .env -f infra/docker-compose.yml --profile app logs -f --tail=100 api web",

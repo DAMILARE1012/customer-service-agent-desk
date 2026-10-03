@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
+from app import secrets
 from app.config import ROOT, settings
 from app.console import utf8_console
 from app.eval.datasets import OFF_TOPIC_QUESTIONS, load_questions
@@ -210,6 +211,7 @@ def pct(x) -> str:
 
 def main() -> None:
     utf8_console()
+    secrets.load()  # the Groq and Langfuse keys may live in Vault
     parser = argparse.ArgumentParser(description="End-to-end RAG evaluation as a Langfuse experiment")
     parser.add_argument("--limit", type=int, default=settings.eval_rag_limit, help="WixQA questions to run; off-topic added at N/5")
     parser.add_argument("--name", help="run name shown in Langfuse (default: model + settings + time)")

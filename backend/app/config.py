@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     widget_sessions_per_hour: int = Field(30, ge=1)  # new widget sessions per client IP
 
     # ── Identity (Keycloak) and the app database ───────────────────────────
+    # Secrets from HashiCorp Vault (see app/secrets.py). Empty VAULT_ADDR = secrets come from the environment.
+    vault_addr: str = ""
+    vault_token: str = ""  # or AppRole (preferred for services):
+    vault_role_id: str = ""
+    vault_secret_id: str = ""
+    vault_role_id_file: str = ""  # files written by infra/vault/init.sh; relative paths are from the project root
+    vault_secret_id_file: str = ""
+    vault_secret_path: str = "secret/baton/api"  # KV v2: <mount>/<path>
+
     # Notifications (see app/notify). Empty SMTP_HOST = emails are logged, not sent.
     baton_web_url: str = "http://localhost:5173"  # links in emails to agents
     smtp_host: str = ""

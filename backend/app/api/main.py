@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import audit, auth, jobs, team, widget
+from app import audit, auth, jobs, secrets, team, widget
 from app.admin import insights as admin_insights
 from app.admin import policy as admin_policy
 from app.api import schemas
@@ -80,6 +80,7 @@ registry.register(StateCollector(store.desk_stats, _index_state))
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    await asyncio.to_thread(secrets.load)  # first: the Langfuse, Groq and widget secrets may live in Vault
     tracing = init_tracing()
     repo = create_repository()
     await repo.start()
@@ -187,7 +188,7 @@ def metrics():
 def health():
     return {"ok": True, "llmConfigured": bool(settings.groq_api_key), "tracing": settings.langfuse_enabled,
             "storage": "postgres" if settings.database_url else "memory", "authIssuer": settings.keycloak_issuer,
-            "reranker": settings.reranker_model or None, "index": _index_state()}  # fmt: skip
+            "reranker": settings.reranker_model or None, "secrets": secrets.source, "index": _index_state()}  # fmt: skip
 
 
 # ── Everyone signed in ───────────────────────────────────────────────────────

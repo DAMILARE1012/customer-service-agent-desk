@@ -8,10 +8,15 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+*/vscode
+
 # Local configuration and secrets — never commit. .env.example is the committed template.
 .env
 .env.*
 !.env.example
+
+# Vault's unseal key, root token and the API's AppRole credentials (written by infra/vault/init.sh)
+infra/vault/local/
 
 # Downloaded datasets, model weights and the built index — regenerate with npm run ingest
 data/
