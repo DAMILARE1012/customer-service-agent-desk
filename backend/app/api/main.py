@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import audit, auth, jobs, widget
+from app import audit, auth, jobs, team, widget
 from app.admin import insights as admin_insights
 from app.admin import policy as admin_policy
 from app.api import schemas
@@ -39,6 +39,7 @@ from app.conversation.lifecycle import ApiError
 from app.conversation.util import now_ms
 from app.conversation.views import customer_summary, customer_view, session_outcome
 from app.db import create_repository, repository, seed_demo_people, set_repository
+from app.notify import alerts
 from app.observability import online_eval
 from app.observability.metrics import StateCollector, http_duration, http_requests, label, registry
 from app.observability.tracing import init_tracing, shutdown
@@ -86,6 +87,7 @@ async def lifespan(_: FastAPI):
     if settings.seed_demo_data:
         await seed_demo_people(repo)
     await admin_policy.load()
+    await team.load_hours()
 
     log.info("Loading knowledge index and embedding model…")
     retriever = await asyncio.to_thread(get_retriever)
@@ -282,7 +284,7 @@ async def start_conversation(
     page reload or a second tab never strands them outside a queue they're already waiting in."""
     live = await store.open_conversation_of(customer["id"])
     if live:
-        return customer_view(await store.get(live["id"]))
+        return await _customer_view(await store.get(live["id"]))
     follow_up = None
     if body.follow_up_of:
         previous = await store.get_own(body.follow_up_of, customer)
@@ -294,8 +296,8 @@ async def start_conversation(
         await store.create(created)
     except store.AlreadyOpen:  # another tab or process started one a moment ago: join it
         live = await store.open_conversation_of(customer["id"])
-        return customer_view(await store.get(live["id"]))
-    return customer_view(created)
+        return await _customer_view(await store.get(live["id"]))
+    return await _customer_view(created)
 
 
 @app.get("/me/conversations/{conversation_id}", response_model=schemas.CustomerConversation, tags=["customer"], name="my_conversation")
@@ -303,21 +305,44 @@ async def my_conversation(conversation_id: str, customer: dict = Depends(current
     conversation = await store.get_own(conversation_id, customer)
     if conversation["status"] != Status.RESOLVED:
         await store.mark_seen(conversation_id)  # presence: the chat window is open
-    return customer_view(conversation)
+    return await _customer_view(conversation)
 
 
 @app.post("/me/conversations/{conversation_id}/end", response_model=schemas.CustomerConversation, tags=["customer"], name="end_conversation")
 async def end_conversation(conversation_id: str, customer: dict = Depends(current_customer)):
     async with store.own_transaction(conversation_id, customer) as conversation:
         engine.close_conversation(conversation, ClosedReason.ENDED_BY_CUSTOMER, now_ms())
-    return customer_view(conversation)
+    return await _customer_view(conversation)
 
 
 @app.post("/me/conversations/{conversation_id}/messages", response_model=schemas.CustomerConversation, tags=["customer"], name="customer_message")
 async def customer_message(conversation_id: str, body: schemas.CustomerMessage, customer: dict = Depends(current_customer)):
     message_limiter.check(customer["id"])
     # Locked only to record the message and to save the reply — never during the LLM call (see engine.py).
-    return customer_view(await engine.receive_customer_message(conversation_id, customer, body.text.strip()))
+    return await _customer_view(await engine.receive_customer_message(conversation_id, customer, body.text.strip()))
+
+
+@app.post("/me/conversations/{conversation_id}/contact", response_model=schemas.CustomerConversation, tags=["customer"], name="leave_contact")
+async def leave_contact(conversation_id: str, body: schemas.ContactRequest, customer: dict = Depends(current_customer)):
+    """An email for the reply, in case the customer has left the chat when an agent answers."""
+    email = team.valid_email(body.email)
+    async with store.own_transaction(conversation_id, customer) as conversation:
+        engine.leave_contact(conversation, email, now_ms())
+    return await _customer_view(conversation)
+
+
+async def _customer_view(conversation: dict) -> dict:
+    return {**customer_view(conversation), "waiting": await team.waiting_info(conversation, now_ms())}
+
+
+_background: set[asyncio.Task] = set()
+
+
+def _in_background(coro) -> None:
+    """Fire and forget (e.g. an email), keeping a reference so the task isn't garbage-collected mid-flight."""
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 # ── Agents: the desk ─────────────────────────────────────────────────────────
@@ -326,11 +351,6 @@ async def customer_message(conversation_id: str, body: schemas.CustomerMessage, 
 def _assigned_to(conversation: dict, agent: dict) -> None:
     if (conversation["assignee"] or {}).get("id") != agent["id"]:
         raise ApiError(403, "This conversation is assigned to another agent.")
-
-
-async def _check_capacity(agent: dict) -> None:
-    if await store.active_count(agent["id"]) >= agent["capacity"]:
-        raise ApiError(409, f"You’re at capacity ({agent['capacity']} active chats). Resolve or return one first.")
 
 
 def _staff_actor(who: Principal) -> dict:
@@ -364,15 +384,25 @@ async def conversation(conversation_id: str, who: Principal = Depends(current_st
 
 @app.post("/conversations/{conversation_id}/agent-messages", response_model=schemas.Conversation, tags=["desk"], name="agent_message")
 async def agent_message(conversation_id: str, body: schemas.AgentMessage, agent: dict = Depends(current_agent)):
+    text = body.text.strip()
     async with store.transaction(conversation_id) as current:
-        engine.post_agent_message(current, agent, body.text.strip(), now_ms())
+        engine.post_agent_message(current, agent, text, now_ms())
+    _in_background(alerts.email_reply_if_away(current, agent["name"], text))  # if the customer has left the chat
     return current
+
+
+@app.put("/me/availability", response_model=schemas.Agent, tags=["desk"], name="set_availability")
+async def set_availability(body: schemas.AvailabilityUpdate, agent: dict = Depends(current_agent)):
+    """The desk's Online / Away switch: Away agents don't count as someone available to customers."""
+    updated = await repository().update_agent(agent["id"], available=body.available)
+    auth.forget_profile("agent", agent["id"])
+    team.forget_status()
+    return updated
 
 
 @app.post("/conversations/{conversation_id}/handoff/accept", response_model=schemas.Conversation, tags=["handoff"], name="accept_handoff")
 async def accept_handoff(conversation_id: str, agent: dict = Depends(current_agent)):
-    await _check_capacity(agent)
-    return await engine.accept_handoff(conversation_id, agent)
+    return await engine.accept_handoff(conversation_id, agent)  # capacity is checked under the agent's lock
 
 
 @app.post("/conversations/{conversation_id}/handoff/return", response_model=schemas.Conversation, tags=["handoff"], name="return_to_bot")
@@ -385,7 +415,6 @@ async def return_to_bot(conversation_id: str, agent: dict = Depends(current_agen
 
 @app.post("/conversations/{conversation_id}/takeover", response_model=schemas.Conversation, tags=["handoff"], name="take_over")
 async def take_over(conversation_id: str, agent: dict = Depends(current_agent)):
-    await _check_capacity(agent)
     return await engine.take_over(conversation_id, agent)
 
 
@@ -467,6 +496,25 @@ async def reset_policy(admin: dict = Depends(current_admin)):
     result = await admin_policy.reset(admin)
     await audit.record(audit.actor(admin, "admin"), "policy.reset")
     return result
+
+
+async def _team_status() -> dict:
+    current = await team.status(now_ms())
+    return {"hours": team.business_hours(), "openNow": current["open"], "agentsOnline": current["agentsOnline"],
+            "available": current["available"], "backAtText": current["backAtText"]}  # fmt: skip
+
+
+@app.get("/admin/business-hours", response_model=schemas.TeamStatus, tags=["admin"], name="admin_business_hours")
+async def get_business_hours(_: dict = Depends(current_admin)):
+    team.forget_status()
+    return await _team_status()
+
+
+@app.put("/admin/business-hours", response_model=schemas.TeamStatus, tags=["admin"], name="admin_update_business_hours")
+async def update_business_hours(body: schemas.BusinessHours, admin: dict = Depends(current_admin)):
+    await team.save_hours(body.model_dump(), admin["name"])
+    await audit.record(audit.actor(admin, "admin"), "business_hours.update", detail=body.model_dump())
+    return await _team_status()
 
 
 @app.get("/admin/insights", tags=["admin"], name="admin_insights")
@@ -558,8 +606,8 @@ def run() -> None:
 
     utf8_console()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # 0.0.0.0 so Prometheus (in Docker) can reach the API via host.docker.internal.
-    uvicorn.run("app.api.main:app", host="0.0.0.0", port=settings.server_port, log_level="info")
+    # 0.0.0.0 so Prometheus (in Docker) can reach the API via host.docker.internal, and so it works in a container.
+    uvicorn.run("app.api.main:app", host="0.0.0.0", port=settings.server_port, workers=settings.api_workers, log_level="info")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
-# Baton's own infrastructure: the app database and Keycloak (sign-in for customers, agents and admins).
+# Baton's infrastructure — the app database and Keycloak (staff sign-in) — and, with the "app" profile,
+# Baton itself as containers (API + web).
 #
-#   npm run infra:up      start (reads secrets from the project's .env)
-#   npm run infra:down    stop (data is kept in the Docker volume)
+#   npm run infra:up      database + Keycloak only (run the API and web app from source: npm run api / dev)
+#   npm run app:up        everything in Docker: database, Keycloak, API, web   → http://localhost:5173
+#   npm run app:ingest    build the knowledge index into the data volume (first run: about an hour on a CPU)
+#   npm run infra:down    stop (data is kept in the Docker volumes)
 #
 # Keycloak  http://localhost:8080   admin console login: KEYCLOAK_ADMIN_USER / KEYCLOAK_ADMIN_PASSWORD
 # Postgres  localhost:5433          database "baton" (app) and "keycloak" (identity), one server
+# Mailpit   http://localhost:8025   catches the app's emails (alerts, replies to customers who left)
 #
 # The realm in keycloak/import/ is imported on the FIRST start only. To re-import after editing it,
 # delete the data: `docker compose --env-file .env -f infra/docker-compose.yml down -v` (destroys users,
@@ -69,5 +73,66 @@ services:
       retries: 30
       start_period: 20s
 
+  # Catches every email the app sends (alerts to agents, replies to customers) in a web inbox — nothing
+  # leaves your machine. Point SMTP_* at a real provider in production.
+  mailpit:
+    image: docker.io/axllent/mailpit:v1.27
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025   # inbox: http://localhost:8025
+      - 127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025 # SMTP for the API run from source
+
+  # ── Baton as containers (profile "app") ─────────────────────────────────────────────────────────
+  api:
+    profiles: [app]
+    build: { context: .., dockerfile: backend/Dockerfile }
+    image: baton-api:local
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+    env_file: ../.env  # GROQ_API_KEY, widget secrets, …; the lines below override what differs inside Docker
+    environment:
+      DATABASE_URL: postgresql://baton:${BATON_DB_PASSWORD}@db:5432/baton
+      KEYCLOAK_URL: http://localhost:${KEYCLOAK_PORT:-8080}  # what browsers see: the tokens' issuer
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080            # how the API reaches Keycloak inside Docker
+      CORS_ORIGIN: ${BATON_WEB_URL:-http://localhost:5173}
+      SMTP_HOST: ${SMTP_DOCKER_HOST:-mailpit}               # Mailpit inside Docker; set SMTP_DOCKER_HOST for a real server
+      SMTP_PORT: ${SMTP_DOCKER_PORT:-1025}
+      LANGFUSE_BASE_URL: ${LANGFUSE_DOCKER_URL:-http://host.docker.internal:3000}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - 127.0.0.1:${BATON_API_PORT:-8787}:8787
+    volumes:
+      - baton_data:/app/data        # knowledge index + embedding models (npm run app:ingest)
+      - baton_content:/app/content  # your help-centre articles, incl. ones published from the review queue
+
+  web:
+    profiles: [app]
+    build: { context: .., dockerfile: frontend/Dockerfile }
+    image: baton-web:local
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      # Public settings for the browser, applied at start-up (see frontend/docker/40-baton-config.sh).
+      VITE_API_URL: http://localhost:${BATON_API_PORT:-8787}
+      VITE_KEYCLOAK_URL: http://localhost:${KEYCLOAK_PORT:-8080}
+      VITE_KEYCLOAK_REALM: baton
+      VITE_KEYCLOAK_CLIENT_ID: baton-web
+      WIDGET_FRAME_ANCESTORS: ${WIDGET_FRAME_ANCESTORS:-*}  # sites allowed to embed the chat widget
+    ports:
+      - 127.0.0.1:${BATON_WEB_PORT:-5173}:8080
+
+  ingest:
+    profiles: [tools]  # run on demand: npm run app:ingest
+    image: baton-api:local
+    env_file: ../.env
+    command: ["baton-ingest"]
+    volumes:
+      - baton_data:/app/data
+      - baton_content:/app/content
+
 volumes:
   db_data:
+  baton_data:
+  baton_content:

@@ -7,7 +7,7 @@ A RAG assistant that answers from your help centre with citations — and when i
 
 <p align="center"><img src="docs/screenshots/agent-handoff-brief.png" alt="The agent desk: a waiting handoff, the transcript and the bot's handoff brief" width="900" /></p>
 
-**Contents** · [The problem](#the-problem) · [What it does](#what-it-does) · [Architecture](#architecture) · [How it works](#how-it-works) · [Screenshots](#screenshots) · [Getting started](#getting-started) · [Adding the widget to a website](#adding-the-widget-to-a-website) · [Accounts](#accounts) · [Tech stack](#tech-stack) · [Results](#results) · [Project layout](#project-layout) · [Limitations](#limitations)
+**Contents** · [The problem](#the-problem) · [What it does](#what-it-does) · [Architecture](#architecture) · [How it works](#how-it-works) · [Screenshots](#screenshots) · [Getting started](#getting-started) · [Adding the widget to a website](#adding-the-widget-to-a-website) · [Accounts](#accounts) · [Deploying](#deploying) · [Tech stack](#tech-stack) · [Results](#results) · [Project layout](#project-layout) · [Limitations](#limitations)
 
 ## The problem
 
@@ -20,8 +20,8 @@ Baton treats the handoff as a **first-class state** of every conversation, with 
 | For | Baton gives them |
 |---|---|
 | **Customers** | A chat bubble on the company’s website — no account, no sign-in. Answers grounded in the help centre, with the articles cited; an immediate, explained handoff when the bot can’t help. Every visit is a fresh session; past ones stay as read-only history they can follow up on. |
-| **Agents** | A queue sorted by urgency and wait, and for each handoff a **brief**: why the bot stepped aside, a summary, open questions, what it already tried, extracted order IDs and amounts, sentiment, sources and the matching internal procedure. The customer’s past sessions sit alongside, and a copilot drafts cited replies. |
-| **Admins** | Agents and capacity, every conversation, the handoff policy (editable live), an overview of handoff reasons and evaluation scores, a **review queue** that turns closed chats into missing articles and test questions, an **audit log**, and **one-step erasure** of a customer. |
+| **Agents** | A queue sorted by urgency and wait, and for each handoff a **brief**: why the bot stepped aside, a summary, open questions, what it already tried, extracted order IDs and amounts, sentiment, sources and the matching internal procedure. The customer’s past sessions sit alongside, and a copilot drafts cited replies. New handoffs chime and raise a browser notification; an Online/Away switch tells customers whether anyone is in. |
+| **Admins** | Agents and capacity, every conversation, the handoff policy and **business hours** (editable live), an overview of handoff reasons and evaluation scores, a **review queue** that turns closed chats into missing articles and test questions, an **audit log**, and **one-step erasure** of a customer. |
 
 ## Architecture
 
@@ -47,7 +47,9 @@ Customers chat through a **widget** embedded on the company’s website; agents 
 
 **While the customer waits.** The bot stays quiet — they asked for a person — but nothing they add is lost: each message lands in the brief under *Added while waiting*, extracted details and sentiment refresh, and anything more urgent (a sensitive topic, rising frustration) raises the priority so they move up the queue; it never lowers it. The customer is told once that their messages reach the team, and the queue shows the agent “+N new”.
 
-**Sessions.** A conversation is one support session and never reopens. It closes when an agent resolves it, the customer ends it, nobody writes for 30 minutes, or a customer waiting for an agent has left (their chat window stopped polling). A customer has at most one live session; reloading rejoins it. **Follow up on this** starts a new session linked to the old one — the agent sees the link and the customer’s timeline; the bot only ever sees the current session.
+**When nobody is available.** “Available” means inside business hours (set by an admin; none = always) *and* at least one agent set to Online with the desk open. A customer waiting for a person sees their **place in line** and a typical wait. If nobody is available, the bot says so honestly — “we’re back Monday at 09:00 (WAT)” — and asks for an email unless the website already vouched for one; the request then **stays in the queue** for the team’s return instead of being dropped, and when an agent replies after the customer has left, the reply goes to them **by email**. Agents hear about new handoffs in the desk (a chime — a different one for urgent — a browser notification and the count in the tab title); a handoff that waits past `ALERT_AFTER_SECONDS`, or arrives while nobody is in, is escalated **once** by email and optionally to a Slack/Teams webhook. Emailing every handoff would teach people to ignore the emails.
+
+**Sessions.** A conversation is one support session and never reopens. It closes when an agent resolves it, the customer ends it, nobody writes for 30 minutes, or a customer waiting for an agent has left (their chat window stopped polling) — unless we can answer them by email, in which case it waits up to `OFFLINE_FOLLOWUP_DAYS`. A customer has at most one live session; reloading rejoins it. **Follow up on this** starts a new session linked to the old one — the agent sees the link and the customer’s timeline; the bot only ever sees the current session.
 
 **Knowledge.** Sources (your Markdown, the WixQA help centre, ABCD agent procedures) are normalised, chunked by heading, de-duplicated and embedded locally with `bge-small-en-v1.5`. Only changed text is re-embedded, and an interrupted build resumes from a checkpoint.
 
@@ -72,6 +74,8 @@ Customers chat through a **widget** embedded on the company’s website; agents 
 | ![The chat launcher over a shop page](docs/screenshots/widget-closed.png) | ![The widget welcome screen with a message box](docs/screenshots/widget-welcome.png) | ![Cited answer in the widget](docs/screenshots/widget-open.png) |
 | **Widget: an agent took over** | **Agent: handoff brief** | **Agent: follow-up and timeline** |
 | ![Agent reply in the widget](docs/screenshots/widget-agent-reply.png) | ![Handoff brief](docs/screenshots/agent-handoff-brief.png) | ![Follow-up and timeline](docs/screenshots/agent-timeline.png) |
+| **Widget: place in line** | **Widget: team away** | **Admin: business hours** |
+| ![Place in line](docs/screenshots/widget-in-line.png) | ![Team away, email form](docs/screenshots/widget-team-away.png) | ![Business hours](docs/screenshots/admin-business-hours.png) |
 
 More in [`docs/screenshots/`](docs/screenshots/).
 
@@ -93,6 +97,16 @@ npm run dev                       # http://localhost:5173 → be Alex or Jade, o
 4. `npm run api` and `npm run dev` in two terminals. Chat as a customer at http://localhost:5173/demo-store; sign in to the staff app at http://localhost:5173 (see [Accounts](#accounts)).
 5. Optional: `npm run obs:up` for Langfuse (:3000), Grafana (:3001) and Prometheus (:9092).
 
+**Everything in Docker.** Same `.env` (steps 1 above), no Node or Python needed:
+
+```bash
+npm run app:up        # Postgres, Keycloak, Mailpit, API, web → http://localhost:5173 (stop `npm run dev` first)
+npm run app:ingest    # once: builds the knowledge index into the baton_data volume (about an hour on a CPU)
+```
+
+Already built the index from source? Copy it into the volume instead of re-ingesting:
+`docker run --rm -v baton_baton_data:/data -v "$PWD/data:/src:ro" alpine sh -c "cd /src && tar -cf - index models | tar -C /data -xf - && chown -R 10001:10001 /data"`.
+
 | Command | Does |
 |---|---|
 | `npm run accounts` | Print every login with its URL and password |
@@ -100,7 +114,8 @@ npm run dev                       # http://localhost:5173 → be Alex or Jade, o
 | `npm run ingest` | Build or update the knowledge index |
 | `npm run eval` · `npm run eval:rag` | Retrieval metrics · end-to-end Langfuse experiment (`-- --include-reviewed` adds approved test questions) |
 | `npm test` | Backend tests |
-| `npm run infra:up` / `infra:down` · `npm run obs:up` / `obs:down` | Keycloak + Postgres · monitoring stack |
+| `npm run infra:up` / `infra:down` · `npm run obs:up` / `obs:down` | Keycloak + Postgres + Mailpit · monitoring stack |
+| `npm run app:up` / `app:down` · `app:logs` · `app:ingest` | The whole app as containers · their logs · build the index in Docker |
 
 ## Adding the widget to a website
 
@@ -135,8 +150,22 @@ All passwords live in **one block at the top of `.env`**. Run `npm run accounts`
 | Keycloak admin console | http://localhost:8080/admin | `KEYCLOAK_ADMIN_USER` (default `admin`) | `KEYCLOAK_ADMIN_PASSWORD` |
 | Langfuse | http://localhost:3000 | `LANGFUSE_INIT_USER_EMAIL` | `LANGFUSE_INIT_USER_PASSWORD` |
 | Grafana | http://localhost:3001 | `GRAFANA_ADMIN_USER` | `GRAFANA_ADMIN_PASSWORD` |
+| Mailpit (every email the app sends) | http://localhost:8025 | none | — |
 
 Keycloak holds staff only: add agents in its admin console and give them the `agent` role. The demo password applies when Keycloak first imports the realm; afterwards, change passwords there.
+
+## Deploying
+
+Two images, configured only by environment variables (nothing secret is baked in; `.env` never reaches a build):
+
+| Image | Built from | Notes |
+|---|---|---|
+| `baton-api` | `backend/Dockerfile` | Python 3.12 slim, CPU-only PyTorch, runs as a non-root user. Mount `/app/data` (index + models) and `/app/content` (articles). `API_WORKERS` sets processes; the app is built to run as several. |
+| `baton-web` | `frontend/Dockerfile` | nginx (unprivileged). `VITE_*` settings are read **when the container starts**, so one image serves anyone’s URLs. `WIDGET_FRAME_ANCESTORS` lists the sites allowed to embed the chat widget; the staff app can’t be framed. |
+
+**Secrets.** The app reads plain environment variables, so any secret store works. On AWS, **SSM Parameter Store** (SecureString — free for standard parameters) or **Secrets Manager** (rotation, about $0.40 per secret a month) injected by ECS task definitions is the simplest fit; HashiCorp Vault is worth it only if you already run it or span several clouds — otherwise it’s one more stateful service to operate and unseal.
+
+**A sensible AWS shape.** A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, and Postgres (RDS). Then tighten for production: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
 
 ## Tech stack
 
@@ -149,6 +178,8 @@ Keycloak holds staff only: add agents in its admin console and give them the `ag
 | Retrieval | sentence-transformers `bge-small-en-v1.5` (local CPU) · BM25 · reciprocal rank fusion |
 | LLM | Groq · `openai/gpt-oss-20b` (answers, copilot) · `openai/gpt-oss-120b` (judge) |
 | Observability | Langfuse 4 (traces, LLM-as-judge, experiments) · Prometheus 3 · Grafana 13 |
+| Notifications | SMTP (Mailpit locally) · Slack/Mattermost/Teams webhook · browser Notification API |
+| Packaging | Docker images: API (python:3.12-slim, CPU PyTorch, non-root) · web (nginx-unprivileged, runtime config) |
 | Tooling | uv · ruff · pytest · Docker Compose |
 
 ## Results
@@ -169,23 +200,24 @@ A no-match threshold of 0.70 catches 98% of off-topic questions while flagging 5
 ## Project layout
 
 ```
-frontend/       React app — features/widget (customer chat), features/demoStore, desk and admin; public/widget.js (embed script)
-backend/        FastAPI app (uv) — api/, auth.py, db/, conversation/, rag/, ingest/, review/, privacy/, eval/
-infra/          Keycloak + Postgres: compose file, realm import, database init
+frontend/       React app — features/widget (customer chat), features/demoStore, desk and admin; public/widget.js (embed script) · Dockerfile + docker/ (nginx, runtime config)
+backend/        FastAPI app (uv) — api/, auth.py, db/, conversation/, team.py (hours, presence, queue), notify/ (email, webhook, alerts), rag/, ingest/, review/, privacy/, eval/ · Dockerfile
+infra/          compose file (Postgres, Keycloak, Mailpit; the app itself with the "app" profile), realm import, database init
 observability/  Langfuse + Prometheus + Grafana: compose file, dashboard, alert rules
 content/        your own Markdown help-centre articles (published review articles land here)
 docs/           architecture diagram (draw.io) and screenshots
 scripts/        accounts.mjs (npm run accounts)
 ```
 
-`npm test` runs 101 backend tests with no network or keys; 5 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
+`npm test` runs 113 backend tests with no network or keys; 7 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
 
 ## Limitations
 
-- Several API processes are supported, with small caveats: disabling an agent takes up to 30 s everywhere, two simultaneous accepts can exceed capacity by one, and Grafana should aggregate the desk gauges with `max`.
+- Several API processes are supported, with small caveats: disabling an agent takes up to 30 s everywhere, rate limits are counted per process, and Grafana should aggregate the desk gauges with `max`.
 - Redaction is rule-based, so an admin checks every review item before it is published.
 - A guest’s session lives in the widget’s storage. Browsers that block or partition third-party storage may start a guest afresh on another site or visit; identified shoppers are unaffected.
-- The apps poll; Server-Sent Events would cut latency. Keycloak runs in development mode — use production mode with TLS and SMTP for real deployments.
+- The apps poll; Server-Sent Events would cut latency. Keycloak runs in development mode — use production mode with TLS for real deployments.
+- Desk sound alerts start after the agent’s first click on the page (browsers block sound until then); desktop notifications need the browser’s permission. Business hours can’t span midnight, and customers can’t reply by email (replies come back to the chat).
 - The demo knowledge base is the Wix help centre, so some answers address a site owner rather than a shop customer.
 
 **Data:** [WixQA](https://huggingface.co/datasets/Wix/WixQA) (MIT) · [ABCD](https://github.com/asappresearch/abcd) (MIT) · [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT).

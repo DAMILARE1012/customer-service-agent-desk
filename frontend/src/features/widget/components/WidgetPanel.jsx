@@ -16,6 +16,7 @@ import { SUGGESTED_QUESTIONS, customerStatus, isOpen } from '../../chat/chatStat
 import { ChatComposer } from '../../chat/components/ChatComposer.jsx';
 import { ChatMessage, TypingIndicator } from '../../chat/components/ChatMessage.jsx';
 import { PrivacyNotice } from '../../chat/components/PrivacyNotice.jsx';
+import { WaitingCard } from './WaitingCard.jsx';
 
 function Welcome({ name, onAsk, sending }) {
   return (
@@ -113,6 +114,7 @@ function Thread({ conversationId, onSend, sending, onStart, starting }) {
         ))}
         {botTyping && <TypingIndicator />}
       </div>
+      {open && conversation.waiting && <WaitingCard conversationId={conversationId} waiting={conversation.waiting} />}
       <div className="border-t border-slate-200 bg-white p-2.5">
         {open ? (
           <ChatComposer

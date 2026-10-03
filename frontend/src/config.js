@@ -2,8 +2,11 @@
 //
 // Only variables prefixed with VITE_ reach the browser bundle. Secrets such as GROQ_API_KEY are
 // deliberately left unprefixed so Vite never ships them to the client.
+//
+// In the Docker image the same VITE_* names are read when the container starts and written to
+// /config.js (window.__BATON_CONFIG__), so one image works for anyone's URLs; they override build-time values.
 
-const env = import.meta.env ?? {}; // `import.meta.env` is undefined outside Vite (e.g. plain Node scripts)
+const env = { ...(import.meta.env ?? {}), ...(globalThis.__BATON_CONFIG__ ?? {}) }; // import.meta.env is undefined outside Vite
 
 function number(name, fallback, { min = -Infinity, max = Infinity } = {}) {
   const raw = env[name];

@@ -212,6 +212,12 @@ V5_BOT_TURN = """
 ALTER TABLE conversations ADD COLUMN bot_turn jsonb;               -- {messageId, startedAt} while the bot answers
 """
 
+# v6: agent availability (the desk's Online/Away switch) and an email the customer left for the reply.
+V6_AVAILABILITY = """
+ALTER TABLE agents ADD COLUMN available boolean NOT NULL DEFAULT true;
+ALTER TABLE conversations ADD COLUMN contact jsonb;                -- {email, at}
+"""
+
 TABLE: dict[Kind, str] = {"customer": "customers", "agent": "agents", "admin": "admins"}
 COLUMNS: dict[Kind, dict[str, str]] = {
     "customer": {"id": "id", "keycloakId": "keycloak_id", "email": "email", "name": "name", "tier": "tier", "location": "location",
@@ -219,7 +225,7 @@ COLUMNS: dict[Kind, dict[str, str]] = {
                  "previousConversations": "previous_conversations", "lastSeenAt": "last_seen_at",
                  "externalId": "external_id", "isVisitor": "is_visitor"},
     "agent": {"id": "id", "keycloakId": "keycloak_id", "email": "email", "name": "name", "capacity": "capacity", "active": "active",
-              "lastSeenAt": "last_seen_at"},
+              "available": "available", "lastSeenAt": "last_seen_at"},
     "admin": {"id": "id", "keycloakId": "keycloak_id", "email": "email", "name": "name", "lastSeenAt": "last_seen_at"},
 }  # fmt: skip
 
@@ -281,6 +287,7 @@ def _head(row: dict) -> dict:
         "reviewedAt": row["reviewed_at"],
         "anonymizedAt": row["anonymized_at"],
         "botTurn": row.get("bot_turn"),
+        "contact": row.get("contact"),
         "handoff": row.get("current_handoff"),
         "handoffHistory": [],
         "lastMessage": {"sender": row["lm_sender"], "text": row["lm_text"], "createdAt": row["lm_at"]} if row.get("lm_sender") else None,
@@ -395,6 +402,9 @@ class PostgresRepository(Repository):
             if version < 5:
                 conn.execute(V5_BOT_TURN)
                 conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+            if version < 6:
+                conn.execute(V6_AVAILABILITY)
+                conn.execute("INSERT INTO schema_version (version) VALUES (6)")
 
     # ── People ──
 
@@ -443,11 +453,47 @@ class PostgresRepository(Repository):
         rows = await self._run(lambda conn: conn.execute(f"SELECT * FROM {TABLE[kind]} ORDER BY name").fetchall())
         return [_person(kind, r) for r in rows]
 
-    async def update_agent(self, agent_id: str, *, capacity: int | None = None, active: bool | None = None) -> dict | None:
+    async def available_agents(self, seen_within_s: int) -> list[dict]:
+        rows = await self._run(
+            lambda conn: conn.execute(
+                """SELECT * FROM agents WHERE active AND available AND last_seen_at > now() - make_interval(secs => %s)""",
+                (seen_within_s,),
+            ).fetchall()
+        )
+        return [_person("agent", r) for r in rows]
+
+    async def handoffs_ahead(self, conversation_id: str) -> int:
         row = await self._run(
             lambda conn: conn.execute(
-                "UPDATE agents SET capacity = COALESCE(%s, capacity), active = COALESCE(%s, active) WHERE id = %s RETURNING *",
-                (capacity, active, agent_id),
+                """WITH waiting AS (
+                       SELECT c.id, CASE h.priority WHEN 'urgent' THEN 2 WHEN 'high' THEN 1 ELSE 0 END AS rank, h.requested_at
+                       FROM conversations c JOIN handoffs h ON h.conversation_id = c.id AND h.current
+                       WHERE c.status = 'handoff_pending')
+                   SELECT count(*) AS n FROM waiting w, waiting me
+                   WHERE me.id = %s AND (w.rank > me.rank OR (w.rank = me.rank AND w.requested_at < me.requested_at))""",
+                (conversation_id,),
+            ).fetchone()
+        )
+        return row["n"]
+
+    async def typical_handoff_wait_ms(self, since: int) -> float | None:
+        row = await self._run(
+            lambda conn: conn.execute(
+                """SELECT count(*) AS n, percentile_cont(0.5) WITHIN GROUP (ORDER BY accepted_at - requested_at) AS median
+                   FROM handoffs WHERE accepted_at IS NOT NULL AND requested_at >= %s""",
+                (since,),
+            ).fetchone()
+        )
+        return float(row["median"]) if row["n"] >= 3 else None
+
+    async def update_agent(
+        self, agent_id: str, *, capacity: int | None = None, active: bool | None = None, available: bool | None = None
+    ) -> dict | None:
+        row = await self._run(
+            lambda conn: conn.execute(
+                """UPDATE agents SET capacity = COALESCE(%s, capacity), active = COALESCE(%s, active), available = COALESCE(%s, available)
+                   WHERE id = %s RETURNING *""",
+                (capacity, active, available, agent_id),
             ).fetchone()
         )
         return _person("agent", row)
@@ -567,11 +613,14 @@ class PostgresRepository(Repository):
             raise
 
     @asynccontextmanager
-    async def transaction(self, conversation_id: str):
+    async def transaction(self, conversation_id: str, *, agent: str | None = None):
         async with self._connection() as conn:
             conn.autocommit = False
             try:
+                load = await self._call(self._lock_agent, conn, agent) if agent else None  # agent first, then the row
                 conversation = await self._call(self._load, conn, conversation_id, lock=True)
+                if conversation is not None and agent:
+                    conversation["_agentLoad"] = load
                 loaded_messages = len(conversation["messages"]) if conversation else 0
                 try:
                     yield conversation
@@ -586,16 +635,25 @@ class PostgresRepository(Repository):
                     await self._call(conn.rollback)
                 conn.autocommit = True
 
+    @staticmethod
+    def _lock_agent(conn, agent_id: str) -> int:
+        """Lock an agent until this transaction ends (in every process), then count their active chats."""
+        key = int.from_bytes(hashlib.sha256(f"agent:{agent_id}".encode()).digest()[:8], "big", signed=True)
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+        sql = "SELECT count(*) AS n FROM conversations WHERE status = 'agent_active' AND assignee_id = %s"
+        return conn.execute(sql, (agent_id,)).fetchone()["n"]
+
     def _save(self, conn, c: dict, loaded_messages: int) -> None:
         conn.execute(
             """UPDATE conversations SET status = %s, assignee_id = %s, assignee = %s, subject = %s, customer = %s, insights = %s,
                    copilot = %s, follow_up_of_id = %s, follow_up = %s, updated_at = %s, closed_at = %s, closed_reason = %s,
                    customer_seen_at = GREATEST(customer_seen_at, %s), trace_ids = %s, reviewed_at = %s, anonymized_at = %s,
-                   bot_turn = %s
+                   bot_turn = %s, contact = %s
                WHERE id = %s""",
             (str(c["status"]), (c["assignee"] or {}).get("id"), Jsonb(c["assignee"]), c["subject"], Jsonb(c["customer"]), Jsonb(c["insights"]),
              Jsonb(c["copilot"]), (c["followUpOf"] or {}).get("id"), Jsonb(c["followUpOf"]), c["updatedAt"], c["closedAt"], c["closedReason"],
-             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], Jsonb(c.get("botTurn")), c["id"]),
+             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], Jsonb(c.get("botTurn")), Jsonb(c.get("contact")),
+             c["id"]),
         )  # fmt: skip
         if c.get("_rewriteMessages"):  # anonymisation rewrites the transcript in place
             c.pop("_rewriteMessages")

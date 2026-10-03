@@ -22,6 +22,8 @@ export function toSummary(conversation) {
       requestedAt: handoff.requestedAt,
       acceptedAt: handoff.acceptedAt,
       addedWhileWaiting: handoff.addedWhileWaiting?.length ?? 0,
+      offline: Boolean(handoff.offline),
+      replyByEmail: Boolean(conversation.contact?.email ?? customer.email),
     },
     sentiment: insights.sentiment.current,
     lastConfidence: insights.lastConfidence,

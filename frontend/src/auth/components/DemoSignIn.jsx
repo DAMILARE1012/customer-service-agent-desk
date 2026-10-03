@@ -1,4 +1,5 @@
 import { useDispatch } from 'react-redux';
+import { baseApi } from '../../api/baseApi.js';
 import { Brand } from '../../components/brand/Brand.jsx';
 import { Avatar, Badge, Icon } from '../../components/ui/index.js';
 import { Link } from '../../app/router.jsx';
@@ -12,6 +13,7 @@ export function DemoSignIn() {
 
   const choose = (persona) => {
     saveDemoPersona(persona.id);
+    dispatch(baseApi.util.resetApiState()); // nothing cached for whoever was here before (e.g. the shop's customer)
     dispatch(signedIn(persona.user));
   };
 

@@ -3,6 +3,7 @@
     bot handling     no customer message for SESSION_IDLE_MINUTES          → inactive
     with an agent    no message from anyone for SESSION_IDLE_MINUTES       → inactive
     waiting          customer's chat not open for SESSION_ABANDON_MINUTES   → abandoned
+                     (with an email to reply to: OFFLINE_FOLLOWUP_DAYS instead — the team answers by email)
 
 "Customer present" comes from their chat window polling the conversation (customerSeenAt), so a
 customer patiently waiting in the queue is never dropped — only one who has left. Right after the
@@ -17,6 +18,7 @@ import logging
 from app.config import settings
 from app.conversation import engine, store
 from app.conversation.constants import ClosedReason, Sender, Status
+from app.conversation.offline import reply_email
 from app.conversation.util import now_ms
 
 log = logging.getLogger(__name__)
@@ -38,6 +40,8 @@ def due_for_closing(conversation: dict, now: int, started_at: int = _STARTED_AT)
             return ClosedReason.INACTIVE if now - conversation["updatedAt"] >= idle_ms else None
         case Status.HANDOFF_PENDING:
             seen = max(conversation.get("customerSeenAt") or 0, _last_customer_message(conversation), started_at)
+            if reply_email(conversation):  # we can answer by email: keep it queued for the team, up to a limit
+                return ClosedReason.ABANDONED if now - seen >= settings.offline_followup_days * 86_400_000 else None
             return ClosedReason.ABANDONED if now - seen >= settings.session_abandon_minutes * 60_000 else None
     return None
 

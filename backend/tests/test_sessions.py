@@ -6,9 +6,16 @@ import asyncio
 from app.config import settings
 from app.conversation import sessions
 from app.db import repository
-from tests.support import ALEX, JADE, JORDAN, LENA, MAYA, SAM, say, start
+from tests.support import ALEX, JADE, JORDAN, LENA, MAYA, SAM, customer, say, start
 
 MINUTE = 60_000
+DAY = 24 * 60 * MINUTE
+
+
+def visitor():
+    """A website visitor: no email, so nobody can answer them once they've left."""
+    row = asyncio.run(repository().create_visitor())
+    return customer(row["id"], row["name"])
 
 
 def test_a_closed_conversation_never_reopens(client):
@@ -62,9 +69,10 @@ def test_follow_up_rules(client):
 
 
 def test_idle_sessions_close_themselves(client):
-    bot_idle, waiting, present, with_agent = (start(client, who) for who in (MAYA, SAM, LENA, JORDAN))
+    guest = visitor()
+    bot_idle, waiting, present, with_agent = (start(client, who) for who in (MAYA, guest, LENA, JORDAN))
     say(client, bot_idle, "How long does a refund take?", MAYA)
-    say(client, waiting, "Can I speak to a human?", SAM)
+    say(client, waiting, "Can I speak to a human?", guest)
     say(client, present, "Can I talk to a real person?", LENA)
     say(client, with_agent, "I want to talk to a real person please", JORDAN)
     client.as_(ALEX).post(f"/conversations/{with_agent}/handoff/accept")
@@ -78,8 +86,21 @@ def test_idle_sessions_close_themselves(client):
     abandoned = repository().conversations.get(waiting)
     assert abandoned["handoff"]["status"] == "abandoned"
     assert waiting not in {c["id"] for c in client.as_(ALEX).get("/conversations").json()}
-    assert client.as_(SAM).get(f"/me/conversations/{waiting}").json()["messages"][-1]["text"].startswith("Chat closed")
+    assert client.as_(guest).get(f"/me/conversations/{waiting}").json()["messages"][-1]["text"].startswith("Chat closed")
     assert repository().conversations.get(present)["status"] == "handoff_pending"
+
+
+def test_a_request_we_can_answer_by_email_stays_queued(client):
+    """Sam's website vouched for an email: leaving the chat doesn't abandon the request — the team replies
+    by email — until OFFLINE_FOLLOWUP_DAYS have passed."""
+    waiting = start(client, SAM)
+    say(client, waiting, "Can I speak to a human?", SAM)
+    asked = repository().conversations.get(waiting)["updatedAt"]
+
+    assert asyncio.run(sessions.sweep(now=asked + 2 * 60 * MINUTE, started_at=0)) == []
+    assert repository().conversations.get(waiting)["status"] == "handoff_pending"
+    closed = asyncio.run(sessions.sweep(now=asked + settings.offline_followup_days * DAY + MINUTE, started_at=0))
+    assert [c["closedReason"] for c in closed] == ["abandoned"]
 
 
 def test_agents_see_the_customer_timeline(client):
@@ -97,8 +118,9 @@ def test_agents_see_the_customer_timeline(client):
 
 
 def test_insights_report_how_sessions_end(client):
-    waiting = start(client, SAM)
-    say(client, waiting, "Can I speak to a human?", SAM)
+    guest = visitor()
+    waiting = start(client, guest)
+    say(client, waiting, "Can I speak to a human?", guest)
     asyncio.run(sessions.sweep(now=repository().conversations.get(waiting)["updatedAt"] + int(settings.session_abandon_minutes * MINUTE) + 1, started_at=0))
     numbers = client.as_(JADE).get("/admin/insights").json()["sessions"]
     assert numbers["byClosedReason"]["abandoned"] == 1 and numbers["abandonmentRate"] == 1

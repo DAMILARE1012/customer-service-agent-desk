@@ -42,6 +42,17 @@ function ConversationListItemBase({ conversation, selected, onSelect, now }) {
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {pending ? <HandoffReasonBadge reason={handoff.reason} /> : <StatusBadge status={status} />}
+            {pending && handoff.offline && (
+              <span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-amber-700" title="Arrived while nobody was available">
+                <Icon name="moon" className="size-3" />
+                After hours
+              </span>
+            )}
+            {pending && handoff.replyByEmail && (
+              <span className="text-slate-400" title="Can be answered by email if the customer has left">
+                <Icon name="mail" className="size-3.5" />
+              </span>
+            )}
             {pending && handoff.addedWhileWaiting > 0 && (
               <span className="rounded-full bg-indigo-600 px-1.5 text-[10px] font-semibold text-white" title="Messages the customer sent while waiting">
                 +{handoff.addedWhileWaiting} new

@@ -8,12 +8,17 @@ export const accountApi = baseApi.injectEndpoints({
       query: () => '/me',
       providesTags: [TAG.ME],
     }),
+    // The desk's Online / Away switch: Away agents don't count as someone available to customers.
+    setAvailability: build.mutation({
+      query: (available) => ({ url: '/me/availability', method: 'PUT', body: { available } }),
+      invalidatesTags: [TAG.ME],
+    }),
   }),
 });
 
-export const { useGetMeQuery } = accountApi;
+export const { useGetMeQuery, useSetAvailabilityMutation } = accountApi;
 
-const NO_AGENT = Object.freeze({ id: null, name: '', capacity: 0, active: false });
+const NO_AGENT = Object.freeze({ id: null, name: '', capacity: 0, active: false, available: true });
 const selectMeResult = accountApi.endpoints.getMe.select();
 
 /** The signed-in agent's profile (capacity, active) — a placeholder until /me has loaded. */

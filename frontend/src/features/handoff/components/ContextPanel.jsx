@@ -14,7 +14,7 @@ function HandoffTab({ conversation }) {
   if (conversation.status === CONVERSATION_STATUS.BOT_ACTIVE || !conversation.handoff) {
     return <LiveBotInsights conversation={conversation} />;
   }
-  return <HandoffBrief key={conversation.handoff.id} handoff={conversation.handoff} />;
+  return <HandoffBrief key={conversation.handoff.id} handoff={conversation.handoff} replyEmail={conversation.contact?.email ?? conversation.customer?.email} />;
 }
 
 export function ContextPanel() {

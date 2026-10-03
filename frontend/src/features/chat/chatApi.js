@@ -48,6 +48,13 @@ export const chatApi = baseApi.injectEndpoints({
       },
       invalidatesTags: [{ type: TAG.MY_CONVERSATION, id: LIST_ID }],
     }),
+    leaveContact: build.mutation({
+      query: ({ conversationId, email }) => ({ url: `/me/conversations/${conversationId}/contact`, method: 'POST', body: { email } }),
+      async onQueryStarted({ conversationId }, { dispatch, queryFulfilled }) {
+        const { data } = await queryFulfilled;
+        dispatch(chatApi.util.upsertQueryData('getMyConversation', conversationId, data));
+      },
+    }),
   }),
 });
 
@@ -57,4 +64,5 @@ export const {
   useStartConversationMutation,
   useEndConversationMutation,
   useSendMessageMutation,
+  useLeaveContactMutation,
 } = chatApi;

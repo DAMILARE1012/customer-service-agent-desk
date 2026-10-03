@@ -50,6 +50,7 @@ class Settings(BaseSettings):
 
     # ── API ────────────────────────────────────────────────────────────────
     server_port: int = Field(8787, ge=1, le=65535)
+    api_workers: int = Field(1, ge=1, le=32)  # processes; the app is built to run as several (see README)
     cors_origin: str = "*"
 
     # ── Support sessions ───────────────────────────────────────────────────
@@ -72,6 +73,20 @@ class Settings(BaseSettings):
     widget_sessions_per_hour: int = Field(30, ge=1)  # new widget sessions per client IP
 
     # ── Identity (Keycloak) and the app database ───────────────────────────
+    # Notifications (see app/notify). Empty SMTP_HOST = emails are logged, not sent.
+    baton_web_url: str = "http://localhost:5173"  # links in emails to agents
+    smtp_host: str = ""
+    smtp_port: int = Field(1025, ge=1, le=65535)
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = False
+    smtp_from: str = "Baton Support <support@baton.example>"
+    alert_emails: str = ""  # comma-separated; empty = every active agent with an email
+    alert_webhook_url: str = ""  # Slack / Mattermost / Teams incoming webhook
+    alert_after_seconds: float = Field(120, ge=10)  # a handoff waiting this long is escalated (once)
+    agent_presence_seconds: int = Field(120, ge=30)  # an agent counts as online if their desk was open this recently
+    offline_followup_days: int = Field(7, ge=1)  # a request we promised to answer by email stays queued this long
+
     keycloak_url: str = "http://localhost:8080"  # public URL: tokens' issuer, links for people
     keycloak_internal_url: str = ""  # how the API reaches Keycloak for signing keys; default keycloak_url
     keycloak_realm: str = "baton"

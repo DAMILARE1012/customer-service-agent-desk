@@ -233,6 +233,8 @@ class SummaryHandoff(Model):
     requested_at: int
     accepted_at: int | None
     added_while_waiting: int = 0
+    offline: bool = Field(False, description="Arrived while nobody was available")
+    reply_by_email: bool = Field(False, description="The customer can be answered by email")
 
 
 class ConversationSummary(Model):
@@ -258,6 +260,7 @@ class Agent(Person):
     email: str | None
     capacity: int
     active: bool
+    available: bool = Field(True, description="The desk's Online / Away switch")
 
 
 class Admin(Person):
@@ -311,6 +314,17 @@ class FollowUpLink(Model):
     subject: str | None
 
 
+class Waiting(Model):
+    """What a customer waiting for a person is told (see app/team.py)."""
+
+    position: int = Field(description="1 = next in line")
+    estimated_minutes: int | None = Field(None, description="Typical recent wait; None when unknown or nobody is in")
+    team_available: bool
+    back_at_text: str | None = Field(None, description="When the team is next in, e.g. 'Monday at 09:00 (WAT)'")
+    reply_email: str | None = Field(None, description="Masked email the reply will go to if they leave")
+    ask_for_email: bool
+
+
 class CustomerConversation(Model):
     id: str
     status: Status
@@ -322,6 +336,7 @@ class CustomerConversation(Model):
     follow_up_of: FollowUpLink | None = None
     agent: CustomerAuthor | None
     messages: list[CustomerMessageView]
+    waiting: Waiting | None = None
 
 
 class CustomerConversationSummary(Model):
@@ -446,6 +461,30 @@ class StartConversation(Model):
 
 class CustomerMessage(Model):
     text: str = Field(min_length=1, max_length=4000)
+
+
+class ContactRequest(Model):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class AvailabilityUpdate(Model):
+    available: bool
+
+
+class BusinessHours(Model):
+    enabled: bool = Field(description="Off = always staffed")
+    timezone: str = Field(description='IANA name, e.g. "Africa/Lagos"')
+    days: list[int] = Field(description="0 = Monday … 6 = Sunday")
+    open: str = Field(description='"09:00"')
+    close: str = Field(description='"17:00"')
+
+
+class TeamStatus(Model):
+    hours: BusinessHours
+    open_now: bool
+    agents_online: int
+    available: bool
+    back_at_text: str | None = None
 
 
 class AgentMessage(Model):

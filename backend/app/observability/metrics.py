@@ -46,6 +46,7 @@ handoff_wait = _metric(Histogram, "handoff_wait_seconds", "Time from handoff to 
                        buckets=(15, 30, 60, 120, 300, 600, 1200, 1800, 3600))  # fmt: skip
 conversations_closed = _metric(Counter, "conversations_closed", "Support sessions ended, by why they ended", ("reason", "service"))
 copilot_drafts = _metric(Counter, "copilot_drafts", "What agents did with the copilot draft when they replied", ("action", "service"))
+notifications = _metric(Counter, "notifications", "Emails and webhooks to customers and agents, by outcome", ("channel", "kind", "outcome", "service"))
 online_eval_score = _metric(Histogram, "online_eval_score", "LLM-judge scores on sampled live answers (0–1)", ("metric", "service"),
                             buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1))  # fmt: skip
 

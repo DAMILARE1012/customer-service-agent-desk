@@ -13,6 +13,7 @@ const EVENT_STYLE = {
   [SYSTEM_EVENT.RESOLVED]: { icon: 'checkCircle', className: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
   [SYSTEM_EVENT.REOPENED]: { icon: 'refresh', className: 'bg-slate-100 text-slate-600 ring-slate-200' },
   [SYSTEM_EVENT.PRIORITY_RAISED]: { icon: 'warning', className: 'bg-rose-50 text-rose-700 ring-rose-200' },
+  [SYSTEM_EVENT.CONTACT_LEFT]: { icon: 'mail', className: 'bg-sky-50 text-sky-700 ring-sky-200' },
 };
 
 /** Lifecycle markers in the transcript. Handoffs are events in the story, not errors. */

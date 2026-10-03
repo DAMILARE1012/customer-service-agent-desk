@@ -69,7 +69,7 @@ def test_migrates_a_v1_database_of_documents():
 
     run(check())
     with psycopg.connect(URL) as conn:
-        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5]
+        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5, 6]
         assert conn.execute("SELECT count(*) FROM conversation_events WHERE conversation_id = %s", (legacy["id"],)).fetchone()[0] == 1
 
 
@@ -106,6 +106,78 @@ def test_transactions_serialise_changes_to_one_conversation():
 
             async with repo.transaction("conv_missing") as missing:
                 assert missing is None
+        finally:
+            await repo.close()
+
+    run(scenario())
+
+
+def test_simultaneous_accepts_cannot_overshoot_an_agents_capacity():
+    reset_schema()
+
+    async def scenario():
+        repo = await started()
+        try:
+            other = {**CUSTOMER, "id": "cus_t2", "email": "t2@example.com"}
+            await repo.seed_person("customer", other)
+            first, second = conversation(), lifecycle.create_conversation(dict(other), 1_000)
+            for c in (first, second):
+                await repo.create_conversation(c)
+            accepted, refused = [], []
+
+            async def accept(conversation_id):  # what engine.accept_handoff does, with capacity 1
+                async with repo.transaction(conversation_id, agent="agt_alex") as locked:
+                    load = locked.pop("_agentLoad")
+                    await asyncio.sleep(0.3)  # widen the race window
+                    if load >= 1:
+                        refused.append(conversation_id)
+                        return
+                    locked.update(status="agent_active", assignee={"id": "agt_alex", "name": "Alex"})
+                    accepted.append(conversation_id)
+
+            await asyncio.gather(accept(first["id"]), accept(second["id"]))
+            assert len(accepted) == 1 and len(refused) == 1
+            assert await repo.count_active("agt_alex") == 1
+        finally:
+            await repo.close()
+
+    run(scenario())
+
+
+def test_presence_queue_position_and_typical_wait():
+    reset_schema()
+
+    async def scenario():
+        repo = await started()
+        try:
+            await repo.seed_person("agent", {"id": "agt_t1", "name": "Tess Agent", "email": "tess@example.com", "capacity": 3, "active": True})
+            assert await repo.available_agents(120) == []  # never seen
+            agent = await repo.upsert_person("agent", Identity(sub="kc-a1", name="Tess Agent", email="tess@example.com", email_verified=True))
+            assert [a["id"] for a in await repo.available_agents(120)] == [agent["id"]]
+            await repo.update_agent(agent["id"], available=False)
+            assert await repo.available_agents(120) == []
+            assert (await repo.update_agent(agent["id"], available=True))["available"] is True
+
+            ids = []
+            for n, (priority, requested) in enumerate([("normal", 1_000), ("normal", 2_000), ("urgent", 3_000)]):
+                person = {**CUSTOMER, "id": f"cus_q{n}", "email": f"q{n}@example.com"}
+                await repo.seed_person("customer", person)
+                c = lifecycle.create_conversation(dict(person), requested)
+                await repo.create_conversation(c)
+                async with repo.transaction(c["id"]) as locked:
+                    locked["status"] = "handoff_pending"
+                    locked["handoff"] = {"id": f"hof_q{n}", "status": "pending", "reason": "customer_request", "priority": priority,
+                                         "requestedAt": requested, "acceptedAt": None}  # fmt: skip
+                    locked["contact"] = {"email": f"q{n}@example.com", "at": requested}
+                ids.append(c["id"])
+            assert [await repo.handoffs_ahead(i) for i in ids] == [1, 2, 0]  # urgent first, then oldest
+            assert (await repo.get_conversation(ids[0]))["contact"]["email"] == "q0@example.com"
+
+            assert await repo.typical_handoff_wait_ms(since=0) is None  # too few to say
+            for n, i in enumerate(ids):
+                async with repo.transaction(i) as locked:
+                    locked["handoff"]["acceptedAt"] = locked["handoff"]["requestedAt"] + (n + 1) * 60_000
+            assert await repo.typical_handoff_wait_ms(since=0) == 120_000
         finally:
             await repo.close()
 

@@ -17,6 +17,7 @@ import copy
 import logging
 import re
 
+from app import team
 from app.config import settings
 from app.conversation import lifecycle, store
 from app.conversation.bot import bot_turn, draft_copilot
@@ -29,6 +30,7 @@ from app.observability.tracing import current_trace_id, observe, trace_attribute
 log = logging.getLogger(__name__)
 create_conversation = lifecycle.create_conversation
 return_to_bot = lifecycle.return_to_bot
+leave_contact = lifecycle.leave_contact
 
 
 def close_conversation(conversation: dict, reason: ClosedReason, now: int, actor: dict | None = None) -> dict:
@@ -123,6 +125,7 @@ async def receive_customer_message(conversation_id: str, customer: dict, text: s
                 await asyncio.sleep(TURN_WAIT_S)
 
         if work["kind"] == "bot":
+            work["team"] = await team.status(now)  # if the bot hands off, is anyone there?
             conversation = await _bot_turn_unlocked(conversation_id, customer, conversation, work, now)
         elif work["kind"] == "copilot":
             draft = await draft_copilot(copy.deepcopy(conversation), text)
@@ -136,6 +139,7 @@ async def receive_customer_message(conversation_id: str, customer: dict, text: s
 async def _bot_turn_unlocked(conversation_id: str, customer: dict, claimed: dict, work: dict, now: int) -> dict:
     """Steps 2 and 3 of a bot turn: run it on a copy, then save it if the turn is still ours."""
     snapshot = copy.deepcopy(claimed)
+    snapshot["_team"] = work.get("team")
     message_id = work["message"]["id"]
     finished = False
     try:
@@ -147,6 +151,7 @@ async def _bot_turn_unlocked(conversation_id: str, customer: dict, claimed: dict
             unchanged = ours and fresh["status"] == Status.BOT_ACTIVE and len(fresh["messages"]) == len(claimed["messages"])
             if unchanged and finished:  # the turn finished on the copy: it becomes the saved state
                 seen = max(fresh["customerSeenAt"] or 0, snapshot["customerSeenAt"] or 0)
+                snapshot.pop("_team", None)
                 fresh.clear()
                 fresh.update(snapshot, botTurn=None, customerSeenAt=seen)
             elif ours:
@@ -177,8 +182,15 @@ async def _with_first_draft(conversation_id: str, conversation: dict) -> dict:
         return await _save_copilot(conversation_id, conversation, draft) or conversation
 
 
+def _check_capacity(conversation: dict, agent: dict) -> None:
+    """Counted under the agent's lock (store.transaction(agent=…)), so simultaneous accepts can't overshoot."""
+    if conversation.pop("_agentLoad", 0) >= agent["capacity"]:
+        raise ApiError(409, f"You’re at capacity ({agent['capacity']} active chats). Resolve or return one first.")
+
+
 async def accept_handoff(conversation_id: str, agent: dict) -> dict:
-    async with store.transaction(conversation_id) as conversation:
+    async with store.transaction(conversation_id, agent=agent["id"]) as conversation:
+        _check_capacity(conversation, agent)
         with _traced(conversation, "accept-handoff"), observe("accept-handoff"):
             _remember_trace(conversation)
             now = now_ms()
@@ -189,7 +201,8 @@ async def accept_handoff(conversation_id: str, agent: dict) -> dict:
 
 
 async def take_over(conversation_id: str, agent: dict) -> dict:
-    async with store.transaction(conversation_id) as conversation:
+    async with store.transaction(conversation_id, agent=agent["id"]) as conversation:
+        _check_capacity(conversation, agent)
         with _traced(conversation, "take-over"), observe("take-over"):
             _remember_trace(conversation)
             lifecycle.take_over(conversation, agent, now_ms())

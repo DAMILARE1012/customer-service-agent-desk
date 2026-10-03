@@ -1,0 +1,16 @@
+# Images are built from the project root (they need backend/ or frontend/ plus content/).
+# Never send secrets, data or local environments to the Docker build.
+.env
+.env.*
+!.env.example
+.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist
+data
+docs
+observability
+*.log

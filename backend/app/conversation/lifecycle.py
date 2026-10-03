@@ -18,6 +18,7 @@ from app.conversation.constants import (
     Status,
     SystemEvent,
 )
+from app.conversation.offline import offline_notice
 from app.conversation.packet import build_handoff_packet
 from app.conversation.policy import compute_priority, conversation_signals
 from app.conversation.signals import extract_entities, merge_entities, score_sentiment, sentiment_label
@@ -79,6 +80,7 @@ def create_conversation(customer: dict, now: int, follow_up_of: dict | None = No
         "handoffHistory": [],
         "copilot": None,
         "botTurn": None,  # {messageId, startedAt} while the bot answers — see engine.py
+        "contact": None,  # {email, at}: where to send the reply if the customer has left (see team.py)
     }
 
 
@@ -108,11 +110,26 @@ def record_attempt(insights: dict, question: dict, reply: dict | None, outcome: 
 
 
 def request_handoff(conversation: dict, decision: dict, trigger_message: dict | None, now: int) -> None:
+    """Step aside for a person. conversation["_team"] (set by engine.py before the turn) says whether anyone
+    is available; if not, the customer is told honestly when the team is back and how they'll get the reply."""
     reason = decision["primary"]["reason"]
-    add_bot_message(conversation, HANDOFF_NOTICE[reason], now, {"kind": BotReplyKind.HANDOFF_NOTICE, "confidence": None, "sources": []})
-    add_system_event(conversation, SystemEvent.HANDOFF_REQUESTED, f"Bot stepped aside — {REASON_LABEL[reason]}", now, reason=reason)
+    team = conversation.get("_team")
+    offline = team is not None and not team["available"]
+    notice = offline_notice(team, conversation) if offline else HANDOFF_NOTICE[reason]
+    add_bot_message(conversation, notice, now, {"kind": BotReplyKind.HANDOFF_NOTICE, "confidence": None, "sources": []})
+    extra = {"offline": True} if offline else {}
+    add_system_event(conversation, SystemEvent.HANDOFF_REQUESTED, f"Bot stepped aside — {REASON_LABEL[reason]}", now, reason=reason, **extra)
     conversation["handoff"] = build_handoff_packet(conversation, decision, trigger_message=trigger_message, now=now, packet_id=next_id("hof"))
+    if offline:
+        conversation["handoff"]["offline"] = {"backAt": team.get("backAt"), "agentsOnline": team.get("agentsOnline", 0)}
     conversation["status"] = Status.HANDOFF_PENDING
+
+
+def leave_contact(conversation: dict, email: str, now: int) -> None:
+    """The customer's email for the reply, in case they've left the chat when an agent answers."""
+    assert_status(conversation, (Status.HANDOFF_PENDING, Status.AGENT_ACTIVE), "leave an email")
+    conversation["contact"] = {"email": email, "at": now}
+    add_system_event(conversation, SystemEvent.CONTACT_LEFT, f"Customer left an email for the reply: {email}", now)
 
 
 PRIORITY_RANK = {Priority.NORMAL: 0, Priority.HIGH: 1, Priority.URGENT: 2}

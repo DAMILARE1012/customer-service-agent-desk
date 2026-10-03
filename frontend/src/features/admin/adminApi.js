@@ -77,6 +77,14 @@ export const adminApi = baseApi.injectEndpoints({
       query: () => ({ url: '/admin/policy/reset', method: 'POST' }),
       invalidatesTags: [TAG.POLICY],
     }),
+    getBusinessHours: build.query({
+      query: () => '/admin/business-hours',
+      providesTags: [TAG.POLICY],
+    }),
+    updateBusinessHours: build.mutation({
+      query: (hours) => ({ url: '/admin/business-hours', method: 'PUT', body: hours }),
+      invalidatesTags: [TAG.POLICY, TAG.AUDIT],
+    }),
   }),
 });
 
@@ -96,4 +104,6 @@ export const {
   useGetPolicyQuery,
   useUpdatePolicyMutation,
   useResetPolicyMutation,
+  useGetBusinessHoursQuery,
+  useUpdateBusinessHoursMutation,
 } = adminApi;

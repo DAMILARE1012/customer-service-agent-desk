@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.conversation.lifecycle import ApiError
+from app.conversation.offline import reply_email
 from app.conversation.util import now_ms
 from app.db import repository
 from app.db.repository import AlreadyOpen, ConversationFilter
@@ -27,9 +28,10 @@ async def create(conversation: dict) -> dict:
 
 
 @asynccontextmanager
-async def transaction(conversation_id: str):
-    """The conversation, locked for this operation and saved when the block ends (rolled back on error)."""
-    async with repository().transaction(conversation_id) as conversation:
+async def transaction(conversation_id: str, *, agent: str | None = None):
+    """The conversation, locked for this operation and saved when the block ends (rolled back on error).
+    With `agent`, that agent is locked too and conversation["_agentLoad"] is their active-chat count."""
+    async with repository().transaction(conversation_id, agent=agent) as conversation:
         if conversation is None:
             raise _missing(conversation_id)
         yield conversation
@@ -98,6 +100,8 @@ def to_summary(conversation: dict) -> dict:
         "handoff": {
             **{k: handoff[k] for k in ("reason", "priority", "requestedAt", "acceptedAt")},
             "addedWhileWaiting": len(handoff.get("addedWhileWaiting") or []),
+            "offline": bool(handoff.get("offline")),
+            "replyByEmail": bool(reply_email(conversation)),
         }
         if handoff
         else None,

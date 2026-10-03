@@ -13,13 +13,14 @@ Two implementations: PostgresRepository (DATABASE_URL set) and MemoryRepository 
 """
 
 import asyncio
+import contextlib
 import copy
 import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 Kind = Literal["customer", "agent", "admin"]
@@ -63,7 +64,7 @@ def new_person(kind: Kind, identity: Identity, person_id: str | None = None) -> 
         return {**base, "tier": "standard", "location": "", "customerSince": date.today().isoformat(),
                 "lifetimeValue": 0.0, "orderCount": 0, "previousConversations": 0}  # fmt: skip
     if kind == "agent":
-        return {**base, "capacity": 3, "active": True}
+        return {**base, "capacity": 3, "active": True, "available": True}
     return base
 
 
@@ -73,9 +74,11 @@ def new_visitor() -> dict:
 
 
 # Conversation fields added after the first release; older stored conversations get them on read.
+PRIORITY_RANK = {"urgent": 2, "high": 1, "normal": 0}  # the desk takes higher priority first, then longest waiting
+
 CONVERSATION_DEFAULTS = {
     "closedAt": None, "closedReason": None, "followUpOf": None, "customerSeenAt": None,
-    "traceIds": [], "reviewedAt": None, "anonymizedAt": None, "botTurn": None,
+    "traceIds": [], "reviewedAt": None, "anonymizedAt": None, "botTurn": None, "contact": None,
 }  # fmt: skip
 
 
@@ -134,7 +137,21 @@ class Repository(ABC):
     async def list_people(self, kind: Kind) -> list[dict]: ...
 
     @abstractmethod
-    async def update_agent(self, agent_id: str, *, capacity: int | None = None, active: bool | None = None) -> dict | None: ...
+    async def update_agent(
+        self, agent_id: str, *, capacity: int | None = None, active: bool | None = None, available: bool | None = None
+    ) -> dict | None: ...
+
+    @abstractmethod
+    async def available_agents(self, seen_within_s: int) -> list[dict]:
+        """Agents who can take a chat now: active, set to Online, and seen (desk open) recently."""
+
+    @abstractmethod
+    async def handoffs_ahead(self, conversation_id: str) -> int:
+        """Waiting handoffs the desk would take before this one (higher priority, then waiting longer)."""
+
+    @abstractmethod
+    async def typical_handoff_wait_ms(self, since: int) -> float | None:
+        """Median time to an agent accepting, over handoffs requested since then (None with too few)."""
 
     @abstractmethod
     async def create_visitor(self) -> dict:
@@ -156,9 +173,13 @@ class Repository(ABC):
         """Raises AlreadyOpen if the customer already has a live conversation."""
 
     @abstractmethod
-    def transaction(self, conversation_id: str):
+    def transaction(self, conversation_id: str, *, agent: str | None = None):
         """`async with repo.transaction(id) as conversation:` — the full conversation, locked against
-        concurrent changes (in any process) until the block ends, then saved. Yields None if missing."""
+        concurrent changes (in any process) until the block ends, then saved. Yields None if missing.
+
+        With `agent`, that agent is locked too (before the conversation, always in that order), and
+        conversation["_agentLoad"] holds their active chats counted under the lock — so two accepts
+        can't both see a free slot. The key is dropped before saving."""
 
     @abstractmethod
     async def get_conversation(self, conversation_id: str) -> dict | None: ...
@@ -258,15 +279,40 @@ class MemoryRepository(Repository):
     async def list_people(self, kind: Kind) -> list[dict]:
         return [dict(p) for p in sorted(self.people[kind].values(), key=lambda p: p["name"])]
 
-    async def update_agent(self, agent_id: str, *, capacity: int | None = None, active: bool | None = None) -> dict | None:
+    async def update_agent(
+        self, agent_id: str, *, capacity: int | None = None, active: bool | None = None, available: bool | None = None
+    ) -> dict | None:
         row = self.people["agent"].get(agent_id)
         if row is None:
             return None
-        if capacity is not None:
-            row["capacity"] = capacity
-        if active is not None:
-            row["active"] = active
+        for field, value in (("capacity", capacity), ("active", active), ("available", available)):
+            if value is not None:
+                row[field] = value
         return dict(row)
+
+    async def available_agents(self, seen_within_s: int) -> list[dict]:
+        cutoff = datetime.now(UTC) - timedelta(seconds=seen_within_s)
+        return [
+            dict(a) for a in self.people["agent"].values()
+            if a.get("active") and a.get("available", True) and a.get("lastSeenAt") and datetime.fromisoformat(a["lastSeenAt"]) >= cutoff
+        ]  # fmt: skip
+
+    async def handoffs_ahead(self, conversation_id: str) -> int:
+        mine = self.conversations.get(conversation_id)
+        if not mine or mine["status"] != "handoff_pending" or not mine["handoff"]:
+            return 0
+        key = lambda c: (-PRIORITY_RANK.get(c["handoff"]["priority"], 0), c["handoff"]["requestedAt"])  # noqa: E731
+        waiting = [c for c in self.conversations.values() if c["status"] == "handoff_pending" and c["handoff"]]
+        return sum(1 for c in waiting if key(c) < key(mine))
+
+    async def typical_handoff_wait_ms(self, since: int) -> float | None:
+        waits = sorted(
+            p["acceptedAt"] - p["requestedAt"]
+            for c in self.conversations.values()
+            for p in [*c["handoffHistory"], *([c["handoff"]] if c["handoff"] else [])]
+            if p.get("acceptedAt") and p["requestedAt"] >= since
+        )
+        return float(waits[len(waits) // 2]) if len(waits) >= 3 else None
 
     async def create_visitor(self) -> dict:
         row = new_visitor()
@@ -302,15 +348,19 @@ class MemoryRepository(Repository):
         self.conversations[conversation["id"]] = copy.deepcopy(with_defaults(conversation))
 
     @asynccontextmanager
-    async def transaction(self, conversation_id: str):
-        async with self._locks[conversation_id]:
+    async def transaction(self, conversation_id: str, *, agent: str | None = None):
+        agent_lock = self._locks[f"agent:{agent}"] if agent else contextlib.nullcontext()
+        async with agent_lock, self._locks[conversation_id]:
             stored = self.conversations.get(conversation_id)
             if stored is None:
                 yield None
                 return
             working = copy.deepcopy(stored)
+            if agent:
+                working["_agentLoad"] = await self.count_active(agent)
             yield working  # an exception discards the changes, like a rollback
             working.pop("_rewriteMessages", None)
+            working.pop("_agentLoad", None)
             if conversation_id in self.conversations:
                 self.conversations[conversation_id] = working
 

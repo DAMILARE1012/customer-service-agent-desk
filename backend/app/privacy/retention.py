@@ -30,6 +30,7 @@ def anonymize(conversation: dict, now: int) -> list[str]:
             message["meta"]["traceId"] = None
     conversation["subject"] = None
     conversation["copilot"] = None
+    conversation["contact"] = None
     customer = conversation["customer"]
     conversation["customer"] = {**customer, "name": "Former conversation", "email": "", "location": ""}
     insights = conversation["insights"]

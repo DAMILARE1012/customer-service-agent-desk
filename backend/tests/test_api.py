@@ -19,6 +19,7 @@ def test_customer_gets_a_cited_answer_in_a_customer_safe_view(client):
 
 
 def test_handoff_is_explained_to_the_agent_but_not_to_the_customer(client):
+    client.as_(ALEX).get("/conversations")  # an agent has the desk open, so someone is available
     conversation_id = start(client, JORDAN)
     body = say(client, conversation_id, "There is an unauthorized charge of $89.00 on my card", JORDAN).json()
     assert body["status"] == "handoff_pending"

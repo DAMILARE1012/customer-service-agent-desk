@@ -19,6 +19,8 @@ CLOSED_TEXT = {
 def _event_text(message: dict) -> str | None:
     event = message.get("event") or {}
     match event.get("type"):
+        case SystemEvent.HANDOFF_REQUESTED if event.get("offline"):
+            return "Your request is with our team — we’ll reply as soon as someone is in"
         case SystemEvent.HANDOFF_REQUESTED:
             return "Connecting you with a member of our team…"
         case SystemEvent.AGENT_JOINED:

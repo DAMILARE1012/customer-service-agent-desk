@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.0",
     "tokenizers>=0.20",
     "sentence-transformers>=3.0",
+    "torch>=2.4",  # direct, so [tool.uv.sources] below can pick the CPU-only build on Linux
     "beautifulsoup4>=4.12",
     "prometheus-client>=0.20",
     "psutil>=6.0",

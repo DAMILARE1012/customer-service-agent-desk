@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, EmptyState, Spinner } from '../../../components/ui/index.js';
 import { errorMessage } from '../../../utils/format.js';
 import { useGetPolicyQuery, useResetPolicyMutation, useUpdatePolicyMutation } from '../adminApi.js';
+import { BusinessHoursCard } from './BusinessHoursCard.jsx';
 import { Card } from './Card.jsx';
 
 const LABELS = {
@@ -32,6 +33,7 @@ export function PolicyView() {
   const mutationError = updateState.error ?? resetState.error;
 
   return (
+    <div className="space-y-6">
     <form onSubmit={save} className="space-y-4">
       <Card
         title="Thresholds"
@@ -82,5 +84,7 @@ export function PolicyView() {
         <p className="text-xs text-slate-500">Tip: calibrate the no-match threshold with <code className="rounded bg-slate-100 px-1">npm run eval</code> before changing it.</p>
       </div>
     </form>
+    <BusinessHoursCard />
+    </div>
   );
 }

@@ -2,13 +2,12 @@ import { combineSlices, configureStore } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
 import { baseApi } from '../api/baseApi.js';
 import authSlice from '../auth/authSlice.js';
-import agentSlice from '../features/agent/agentSlice.js';
 import composerSlice from '../features/composer/composerSlice.js';
 import deskSlice from '../features/conversations/deskSlice.js';
 import notificationsSlice from '../features/notifications/notificationsSlice.js';
 import { listenerMiddleware } from './listeners.js';
 
-const rootReducer = combineSlices(baseApi, authSlice, agentSlice, deskSlice, composerSlice, notificationsSlice);
+const rootReducer = combineSlices(baseApi, authSlice, deskSlice, composerSlice, notificationsSlice);
 
 export const store = configureStore({
   reducer: rootReducer,

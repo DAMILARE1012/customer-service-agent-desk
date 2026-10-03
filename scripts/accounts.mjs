@@ -43,6 +43,7 @@ const sections = [
   },
   { title: 'Keycloak admin console — users, roles, sessions', url: `${keycloak}/admin`, users: [value('KEYCLOAK_ADMIN_USER', 'admin')], password: value('KEYCLOAK_ADMIN_PASSWORD') },
   { title: 'Langfuse — traces and evaluation', url: env.LANGFUSE_BASE_URL || 'http://localhost:3000', users: [value('LANGFUSE_INIT_USER_EMAIL')], password: value('LANGFUSE_INIT_USER_PASSWORD') },
+  { title: 'Mailpit — every email the app sends (alerts, replies)', url: `http://localhost:${env.MAILPIT_UI_PORT || 8025}`, users: ['none'], password: '—' },
   { title: 'Grafana — monitoring', url: `http://localhost:${env.GRAFANA_PORT || 3001}`, users: [value('GRAFANA_ADMIN_USER', 'admin')], password: value('GRAFANA_ADMIN_PASSWORD') },
 ];
 

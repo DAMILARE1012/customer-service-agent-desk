@@ -1,7 +1,6 @@
 import { useSelector } from 'react-redux';
 import { CONVERSATION_STATUS } from '../../constants/conversation.js';
 import { selectCurrentAgent } from '../account/accountApi.js';
-import { selectAvailability } from '../agent/agentSlice.js';
 import { selectMyActiveCount } from '../conversations/selectors.js';
 import {
   useAcceptHandoffMutation,
@@ -16,7 +15,6 @@ import {
  */
 export function useHandoffActions(conversation) {
   const agent = useSelector(selectCurrentAgent);
-  const availability = useSelector(selectAvailability);
   const activeCount = useSelector(selectMyActiveCount);
 
   const [accept, acceptState] = useAcceptHandoffMutation();
@@ -27,7 +25,7 @@ export function useHandoffActions(conversation) {
   const status = conversation?.status;
   const isMine = Boolean(agent.id) && conversation?.assignee?.id === agent.id;
   const atCapacity = activeCount >= agent.capacity;
-  const away = availability !== 'online';
+  const away = agent.available === false;
   const args = { conversationId: conversation?.id }; // who acts comes from the access token
 
   const blockedReason = !agent.id

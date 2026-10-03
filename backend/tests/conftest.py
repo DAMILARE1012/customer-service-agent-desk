@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import auth
+from app import auth, team
 from app.admin import policy as admin_policy
 from app.config import settings
 from tests.support import Client, fake_answer, no_procedure
@@ -43,6 +43,7 @@ def client(monkeypatch):
     auth._profiles.clear()
     main.session_limiter.reset()
     main.message_limiter.reset()
+    team._cache.update(at=0.0, status=None, wait=(0.0, None))  # module-level caches: start each test fresh
     try:
         with TestClient(main.app) as http:
             yield Client(http, holder)

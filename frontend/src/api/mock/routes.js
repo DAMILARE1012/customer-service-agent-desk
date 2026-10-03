@@ -137,6 +137,40 @@ function insights() {
 
 const sortRecent = (list) => list.sort((a, b) => b.updatedAt - a.updatedAt);
 
+// What a customer waiting for a person is told (the API computes this in backend/app/team.py). The mock has
+// no presence tracking: the team counts as available unless every agent has set themselves Away.
+const PRIORITY_RANK = { urgent: 2, high: 1, normal: 0 };
+const businessHours = { enabled: false, timezone: 'UTC', days: [0, 1, 2, 3, 4], open: '09:00', close: '17:00' };
+
+function maskEmail(email) {
+  if (!email?.includes('@')) return null;
+  const [name, domain] = email.split('@');
+  return `${name[0]}${'•'.repeat(Math.max(1, Math.min(name.length - 1, 6)))}@${domain}`;
+}
+
+function waitingFor(conversation) {
+  if (conversation.status !== CONVERSATION_STATUS.HANDOFF_PENDING || !conversation.handoff) return null;
+  const rank = (c) => [-(PRIORITY_RANK[c.handoff.priority] ?? 0), c.handoff.requestedAt];
+  const before = (a, b) => rank(a)[0] < rank(b)[0] || (rank(a)[0] === rank(b)[0] && rank(a)[1] < rank(b)[1]);
+  const waiting = [...db.conversations.values()].filter((c) => c.status === CONVERSATION_STATUS.HANDOFF_PENDING && c.handoff);
+  const email = conversation.contact?.email ?? conversation.customer.email ?? null;
+  return {
+    position: waiting.filter((c) => before(c, conversation)).length + 1,
+    estimatedMinutes: 2,
+    teamAvailable: db.agents.some((a) => a.active && a.available !== false),
+    backAtText: null,
+    replyEmail: maskEmail(email),
+    askForEmail: !email,
+  };
+}
+
+function teamStatus() {
+  const online = db.agents.filter((a) => a.active && a.available !== false).length;
+  return { hours: { ...businessHours }, openNow: true, agentsOnline: online, available: online > 0, backAtText: null };
+}
+
+const viewFor = (conversation) => ({ ...customerView(conversation), waiting: waitingFor(conversation) });
+
 const routes = [
   // Everyone
   ['GET', /^\/me$/, (_, __, user) => {
@@ -157,7 +191,7 @@ const routes = [
     const customer = asCustomer(user);
     // One live session per customer: a reload or second tab resumes it.
     const live = [...db.conversations.values()].find((c) => c.customer.id === customer.id && c.status !== CONVERSATION_STATUS.RESOLVED);
-    if (live) return customerView(live);
+    if (live) return viewFor(live);
     let followUp = null;
     if (body?.followUpOf) {
       const previous = ownConversation(body.followUpOf, customer);
@@ -166,22 +200,35 @@ const routes = [
     }
     const conversation = engine.createConversation(customer, now(), followUp);
     db.conversations.set(conversation.id, conversation);
-    return customerView(conversation);
+    return viewFor(conversation);
   }],
   ['GET', /^\/me\/conversations\/([\w-]+)$/, ([id], __, user) => {
     const conversation = ownConversation(id, asCustomer(user));
     if (conversation.status !== CONVERSATION_STATUS.RESOLVED) conversation.customerSeenAt = now(); // presence
-    return customerView(conversation);
+    return viewFor(conversation);
   }],
   ['POST', /^\/me\/conversations\/([\w-]+)\/end$/, ([id], __, user) =>
-    customerView(engine.closeConversation(ownConversation(id, asCustomer(user)), CLOSED_REASON.ENDED_BY_CUSTOMER, now()))],
+    viewFor(engine.closeConversation(ownConversation(id, asCustomer(user)), CLOSED_REASON.ENDED_BY_CUSTOMER, now()))],
   ['POST', /^\/me\/conversations\/([\w-]+)\/messages$/, ([id], body, user) => {
     const conversation = ownConversation(id, asCustomer(user));
     if (!body?.text?.trim()) throw new ApiError(400, '"text" field required.');
-    return customerView(engine.receiveCustomerMessage(conversation, body.text.trim(), now()));
+    return viewFor(engine.receiveCustomerMessage(conversation, body.text.trim(), now()));
+  }],
+
+  ['POST', /^\/me\/conversations\/([\w-]+)\/contact$/, ([id], body, user) => {
+    const conversation = ownConversation(id, asCustomer(user));
+    const email = body?.email?.trim() ?? '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) throw new ApiError(400, 'That doesn’t look like an email address.');
+    conversation.contact = { email, at: now() };
+    return viewFor(conversation);
   }],
 
   // Agents
+  ['PUT', /^\/me\/availability$/, (_, body, user) => {
+    const agent = profileFor('agent', user);
+    agent.available = Boolean(body?.available);
+    return agent;
+  }],
   ['GET', /^\/customers$/, (_, __, user) => (asStaff(user), db.customers)],
   ['GET', /^\/customers\/([\w-]+)\/conversations$/, ([customerId], __, user) => {
     asStaff(user);
@@ -246,6 +293,8 @@ const routes = [
   ['GET', /^\/admin\/policy$/, (_, __, user) => (asAdmin(user), policy())],
   ['PUT', /^\/admin\/policy$/, (_, body, user) => updatePolicy(body, asAdmin(user))],
   ['POST', /^\/admin\/policy\/reset$/, (_, __, user) => updatePolicy(POLICY_DEFAULTS, asAdmin(user))],
+  ['GET', /^\/admin\/business-hours$/, (_, __, user) => (asAdmin(user), teamStatus())],
+  ['PUT', /^\/admin\/business-hours$/, (_, body, user) => (asAdmin(user), Object.assign(businessHours, body), teamStatus())],
   ['GET', /^\/admin\/insights$/, (_, __, user) => (asAdmin(user), insights())],
   ...reviewRoutes(asAdmin),
   ...customerAdminRoutes(asAdmin),

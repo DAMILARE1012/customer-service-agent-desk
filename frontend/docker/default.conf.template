@@ -1,0 +1,46 @@
+# Baton web: the staff app, the chat widget (/widget, /widget.js) and the demo store, as static files.
+# Rendered by the nginx image at start-up (envsubst): ${WIDGET_FRAME_ANCESTORS} is the list of sites
+# allowed to embed the chat widget — e.g. "https://shop.example.com https://www.example.com".
+
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    server_tokens off;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # Hashed build files never change: cache them for a year.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        try_files $uri =404;
+    }
+
+    # Small files that change with each deploy or start-up: always revalidate.
+    location = /config.js { add_header Cache-Control "no-cache"; add_header X-Content-Type-Options nosniff always; }
+    location = /widget.js {
+        add_header Cache-Control "no-cache";
+        add_header Access-Control-Allow-Origin "*";  # loaded by other sites' pages
+        add_header X-Content-Type-Options nosniff always;
+    }
+
+    # The chat panel runs in an iframe on other sites: only the listed ones may embed it.
+    location = /widget {
+        add_header Content-Security-Policy "frame-ancestors 'self' ${WIDGET_FRAME_ANCESTORS}" always;
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        try_files /index.html =404;
+    }
+
+    # Everything else is the single-page app; it must not be framed by other sites.
+    location / {
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        try_files $uri /index.html;
+    }
+
+    location = /healthz { access_log off; return 200 "ok\n"; }
+}

@@ -32,6 +32,7 @@ class SystemEvent(StrEnum):
     RETURNED_TO_BOT = "returned_to_bot"
     RESOLVED = "resolved"  # any close; the event's closedReason says why
     PRIORITY_RAISED = "priority_raised"  # something the customer added while waiting made it more urgent (agents only)
+    CONTACT_LEFT = "contact_left"  # the customer left an email for the reply (agents only)
     REOPENED = "reopened"  # legacy: closed conversations no longer reopen
 
 
