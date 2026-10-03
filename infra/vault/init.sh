@@ -4,8 +4,8 @@
 #
 #   1. initialise Vault the first time (1 unseal key — local only; production uses KMS auto-unseal)
 #   2. unseal it (Vault starts sealed after every restart)
-#   3. enable KV v2 at secret/, a policy and an AppRole per consumer: baton-api (the API) and
-#      baton-infra (Vault Agent, which hands Postgres and Keycloak their passwords)
+#   3. enable KV v2 at secret/, a policy and an AppRole per consumer: baton-api (the API), baton-infra
+#      (Vault Agent for Postgres and Keycloak) and baton-observability (Vault Agent for Langfuse, Grafana)
 #   4. the first time a path is missing, fill it: from .env if a value is there, otherwise — for secrets
 #      nobody needs to choose — a strong random value. With VAULT_SEED=force, values found in .env are
 #      merged into what Vault already holds (nothing is regenerated, so the database password can't change).
@@ -56,8 +56,17 @@ approle() { # approle <role> <file prefix>
 }
 approle baton-api ""
 approle baton-infra "infra_"
+approle baton-observability "obs_"
 
 random() { head -c 48 /dev/urandom | base64 | tr -d '+/=\n' | cut -c1-32; }
+generate() { # some secrets have a required shape
+  case "$1" in
+    LANGFUSE_ENCRYPTION_KEY) head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' ;; # 256-bit, 64 hex characters
+    LANGFUSE_PUBLIC_KEY) echo "pk-lf-$(random)" ;;
+    LANGFUSE_SECRET_KEY) echo "sk-lf-$(random)" ;;
+    *) random ;;
+  esac
+}
 
 # seed <path> "<keys>" "<keys that may be generated>"
 seed() {
@@ -68,7 +77,7 @@ seed() {
   for name in $keys; do
     eval "value=\${$name:-}"
     [ "$value" = "change-me" ] && value=""
-    if [ -z "$value" ] && [ "$exists" -eq 0 ] && echo "$generate" | grep -q " $name "; then value=$(random); fi
+    if [ -z "$value" ] && [ "$exists" -eq 0 ] && echo "$generate" | grep -q " $name "; then value=$(generate "$name"); fi
     if [ -n "$value" ]; then set -- "$@" "$name=$value"; fi
   done
   [ "$#" -eq 0 ] && { echo "vault-init: nothing to store in $path yet"; return 0; }
@@ -79,6 +88,9 @@ seed() {
 seed database "BATON_DB_PASSWORD" "BATON_DB_PASSWORD"
 seed keycloak "KEYCLOAK_DB_PASSWORD KEYCLOAK_ADMIN_PASSWORD BATON_DEMO_PASSWORD" "KEYCLOAK_DB_PASSWORD KEYCLOAK_ADMIN_PASSWORD BATON_DEMO_PASSWORD"
 seed keycloak-client "KEYCLOAK_ADMIN_CLIENT_SECRET" "KEYCLOAK_ADMIN_CLIENT_SECRET"
-seed api "GROQ_API_KEY WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY SMTP_PASSWORD ALERT_WEBHOOK_URL" "WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET"
+seed api "GROQ_API_KEY WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET SMTP_PASSWORD ALERT_WEBHOOK_URL" "WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET"
+OBSERVABILITY="LANGFUSE_POSTGRES_PASSWORD LANGFUSE_SALT LANGFUSE_ENCRYPTION_KEY LANGFUSE_CLICKHOUSE_PASSWORD LANGFUSE_REDIS_PASSWORD LANGFUSE_MINIO_PASSWORD LANGFUSE_NEXTAUTH_SECRET LANGFUSE_INIT_USER_PASSWORD GRAFANA_ADMIN_PASSWORD"
+seed observability "$OBSERVABILITY" "$OBSERVABILITY"
+seed langfuse-project "LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY" "LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY"
 
 echo "vault-init: ready (UI http://localhost:8200 — root token in infra/vault/local/init.txt)"

@@ -16,6 +16,8 @@ several processes behind a load balancer.
 import asyncio
 import json
 import logging
+import os
+import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -79,7 +81,15 @@ registry.register(StateCollector(store.desk_stats, _index_state))
 
 
 @asynccontextmanager
+def _configure_logging() -> None:
+    """In every process: with API_WORKERS > 1 each worker is a fresh interpreter (spawned on Windows), so
+    configuring logging only in run() — the parent — would silently drop the app's own logs and errors."""
+    utf8_console()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
 async def lifespan(_: FastAPI):
+    _configure_logging()
     await asyncio.to_thread(secrets.load)  # first: the Langfuse, Groq and widget secrets may live in Vault
     tracing = init_tracing()
     repo = create_repository()
@@ -605,10 +615,20 @@ async def admin_audit(
 def run() -> None:
     import uvicorn
 
-    utf8_console()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _configure_logging()
+    if settings.api_workers > 1 or settings.cpu_threads_per_worker:
+        # Set before the workers start (they inherit it): PyTorch and NumPy otherwise each use every core in
+        # every worker, and the processes slow each other down instead of adding throughput.
+        threads = settings.cpu_threads_per_worker or max(1, (os.cpu_count() or 1) // settings.api_workers)
+        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(name, str(threads))
+        log.info("%s worker(s) × %s math thread(s) each", settings.api_workers, os.environ["OMP_NUM_THREADS"])
+    if settings.api_workers > 1 and sys.platform == "win32":
+        log.warning("API_WORKERS > 1 on Windows: uvicorn's workers can fail to share the socket (WinError 10022) and "
+                    "restart. Run several processes in the Linux container (Docker, AWS) instead.")  # fmt: skip
     # 0.0.0.0 so Prometheus (in Docker) can reach the API via host.docker.internal, and so it works in a container.
-    uvicorn.run("app.api.main:app", host="0.0.0.0", port=settings.server_port, workers=settings.api_workers, log_level="info")
+    uvicorn.run("app.api.main:app", host="0.0.0.0", port=settings.server_port, workers=settings.api_workers, log_level="info",
+                timeout_worker_healthcheck=settings.api_worker_healthcheck_seconds, timeout_keep_alive=settings.api_keep_alive_seconds)
 
 
 if __name__ == "__main__":

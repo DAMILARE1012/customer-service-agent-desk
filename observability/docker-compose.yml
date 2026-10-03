@@ -1,11 +1,20 @@
 # Observability stack: Langfuse (traces + evaluation) and Prometheus + Grafana (monitoring).
 #
-#   npm run obs:up      start (reads secrets from the project's .env)
+#   npm run obs:up      start — needs the infrastructure running first (npm run infra:up): its Vault holds
+#                       every password here, and nothing starts until they've been fetched
 #   npm run obs:down    stop (data is kept in Docker volumes)
 #
-# Langfuse  http://localhost:3000   login: LANGFUSE_INIT_USER_EMAIL / LANGFUSE_INIT_USER_PASSWORD
-# Grafana   http://localhost:3001   login: GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD
+# Start-up order:  (infra) vault ─▶ secrets (Vault Agent) ─▶ postgres · clickhouse · redis · minio · grafana
+#                                                          └─▶ langfuse-web · langfuse-worker (once their stores are healthy)
+#
+# Langfuse  http://localhost:3000   login: LANGFUSE_INIT_USER_EMAIL / password in Vault (npm run accounts)
+# Grafana   http://localhost:3001   login: GRAFANA_ADMIN_USER / password in Vault (npm run accounts)
 # Prometheus http://localhost:9092
+#
+# Secrets: secret/baton/observability (this stack's own) and secret/baton/langfuse-project (the project
+# keys, also read by the API) — rendered by Vault Agent (vault-agent.hcl) into the obs_secrets volume.
+# Postgres and Grafana read *_FILE variables; the other images start through with-secrets.sh, which loads
+# their env file and then runs the image's own entrypoint unchanged.
 #
 # Based on Langfuse's official docker-compose.yml (single VM, no HA or backups — fine for local use).
 # All ports bind to 127.0.0.1; internal services (Postgres, ClickHouse, Redis) aren't exposed at all.
@@ -14,37 +23,34 @@ name: baton-observability
 
 x-langfuse-env: &langfuse-env
   NEXTAUTH_URL: http://localhost:3000
-  DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD:?set in .env}@postgres:5432/postgres
-  SALT: ${LANGFUSE_SALT:?set in .env}
-  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set in .env}
   TELEMETRY_ENABLED: 'false'
   CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
   CLICKHOUSE_URL: http://clickhouse:8123
   CLICKHOUSE_USER: clickhouse
-  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set in .env}
   CLICKHOUSE_CLUSTER_ENABLED: 'false'
   REDIS_HOST: redis
   REDIS_PORT: '6379'
-  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set in .env}
   # The worker logs "Socket timeout… 30000ms" on idle queues (langfuse/langfuse#13601); ingestion,
   # scores and datasets still work. Langfuse advises more CPU over raising this — see README.
   REDIS_SOCKET_TIMEOUT_MS: ${LANGFUSE_REDIS_SOCKET_TIMEOUT_MS:-30000}
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
   LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set in .env}
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: 'true'
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
   LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set in .env}
   LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: 'true'
   LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  # DATABASE_URL, SALT, ENCRYPTION_KEY, CLICKHOUSE_PASSWORD, REDIS_AUTH and the S3 secret keys come from
+  # Vault (langfuse.env).
 
 x-langfuse-depends-on: &langfuse-depends-on
+  secrets:
+    condition: service_completed_successfully
   postgres:
     condition: service_healthy
   minio:
@@ -54,50 +60,70 @@ x-langfuse-depends-on: &langfuse-depends-on
   clickhouse:
     condition: service_healthy
 
+x-secrets-volume: &secrets-volume infra_obs_secrets:/run/obs-secrets:ro
+x-wrapper-volume: &wrapper-volume ./with-secrets.sh:/with-secrets.sh:ro
+
 services:
+  # ── Secrets from Vault (in the infrastructure's compose project) ───────────
+  secrets:
+    image: docker.io/hashicorp/vault:1.20
+    entrypoint: ["vault", "agent", "-config=/vault/agent/agent.hcl"]
+    volumes:
+      - ./vault-agent.hcl:/vault/agent/agent.hcl:ro
+      - ${VAULT_LOCAL_DIR:-../infra/vault/local}:/vault/local:ro  # the baton-observability AppRole, written by vault-init
+      - infra_obs_secrets:/run/obs-secrets
+    networks: [baton]
+
   # ── Langfuse ────────────────────────────────────────────────────────────────
   langfuse-web:
     image: docker.langfuse.com/langfuse/langfuse:4
     restart: unless-stopped
     depends_on: *langfuse-depends-on
+    entrypoint: ["sh", "/with-secrets.sh"]
+    command: ["dumb-init", "--", "./web/entrypoint.sh", "node", "./web/server.js", "--keepAliveTimeout", "110000"]
     ports:
       - 127.0.0.1:3000:3000
     environment:
       <<: *langfuse-env
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set in .env}
+      SECRETS_FILE: /run/obs-secrets/langfuse.env /run/obs-secrets/langfuse-web.env
       # Browsers upload media through the host port; the server talks to MinIO directly.
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
-      # Headless setup: the org, project, API keys and first user are created on first start,
-      # using the same keys the backend reads — no clicking through the UI.
+      # Headless setup: the org, project, API keys and first user are created on first start, with the
+      # project keys the API reads too (both from secret/baton/langfuse-project) — no clicking through the UI.
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:?set in .env}
       LANGFUSE_INIT_ORG_NAME: Baton
       LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:?set in .env}
       LANGFUSE_INIT_PROJECT_NAME: Baton assistant
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set in .env}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set in .env}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?set in .env}
       LANGFUSE_INIT_USER_NAME: Admin
-      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
+    volumes: [*secrets-volume, *wrapper-volume]
 
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     restart: unless-stopped
     depends_on: *langfuse-depends-on
+    entrypoint: ["sh", "/with-secrets.sh"]
+    command: ["dumb-init", "--", "./worker/entrypoint.sh", "node", "worker/dist/index.js"]
     environment:
       <<: *langfuse-env
+      SECRETS_FILE: /run/obs-secrets/langfuse.env
+    volumes: [*secrets-volume, *wrapper-volume]
 
   postgres:
     image: docker.io/postgres:17
     restart: unless-stopped
+    depends_on:
+      secrets: { condition: service_completed_successfully }
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_PASSWORD_FILE: /run/obs-secrets/postgres_password
       POSTGRES_DB: postgres
       TZ: UTC
       PGTZ: UTC
     volumes:
       - langfuse_postgres:/var/lib/postgresql/data
+      - *secrets-volume
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 3s
@@ -108,13 +134,19 @@ services:
     image: docker.io/clickhouse/clickhouse-server:25.12
     restart: unless-stopped
     user: '101:101'
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    entrypoint: ["sh", "/with-secrets.sh"]
+    command: ["/entrypoint.sh"]
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set in .env}
+      SECRETS_FILE: /run/obs-secrets/clickhouse.env
     volumes:
       - langfuse_clickhouse:/var/lib/clickhouse
       - langfuse_clickhouse_logs:/var/log/clickhouse-server
+      - *secrets-volume
+      - *wrapper-volume
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
       interval: 5s
@@ -125,16 +157,20 @@ services:
   minio:
     image: cgr.dev/chainguard/minio
     restart: unless-stopped
-    entrypoint: sh
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    entrypoint: ["sh", "/with-secrets.sh"]
     # Create the 'langfuse' bucket before starting.
-    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    command: ["sh", "-c", "mkdir -p /data/langfuse && exec minio server --address :9000 --console-address :9001 /data"]
     environment:
       MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:?set in .env}
+      SECRETS_FILE: /run/obs-secrets/minio.env
     ports:
       - 127.0.0.1:9090:9000
     volumes:
       - langfuse_minio:/data
+      - *secrets-volume
+      - *wrapper-volume
     healthcheck:
       test: ['CMD', 'mc', 'ready', 'local']
       interval: 1s
@@ -145,11 +181,18 @@ services:
   redis:
     image: docker.io/redis:7
     restart: unless-stopped
-    command: --requirepass ${LANGFUSE_REDIS_PASSWORD:?set in .env} --maxmemory-policy noeviction
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    entrypoint: ["sh", "/with-secrets.sh"]
+    command: ["sh", "-c", 'exec docker-entrypoint.sh redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory-policy noeviction']
+    environment:
+      SECRETS_FILE: /run/obs-secrets/redis.env
     volumes:
       - langfuse_redis:/data
+      - *secrets-volume
+      - *wrapper-volume
     healthcheck:
-      test: ['CMD', 'redis-cli', '-a', '${LANGFUSE_REDIS_PASSWORD}', 'ping']
+      test: ['CMD-SHELL', 'redis-cli -a "$$(cat /run/obs-secrets/redis_password)" --no-auth-warning ping | grep -q PONG']
       interval: 3s
       timeout: 10s
       retries: 10
@@ -175,12 +218,13 @@ services:
     image: grafana/grafana:13.2.3
     restart: unless-stopped
     depends_on:
-      - prometheus
+      prometheus: { condition: service_started }
+      secrets: { condition: service_completed_successfully }
     ports:
       - 127.0.0.1:${GRAFANA_PORT:-3001}:3000
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/obs-secrets/grafana_admin_password  # from Vault
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/baton.json
@@ -188,13 +232,18 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
+      - *secrets-volume
 
-# Explicit names keep the data created before the project was renamed to Baton.
+networks:
+  default: {}
+  baton: { external: true, name: baton_default }  # reach Vault in the infrastructure's project
+
 volumes:
-  langfuse_postgres: { name: support-observability_langfuse_postgres }
-  langfuse_clickhouse: { name: support-observability_langfuse_clickhouse }
-  langfuse_clickhouse_logs: { name: support-observability_langfuse_clickhouse_logs }
-  langfuse_minio: { name: support-observability_langfuse_minio }
-  langfuse_redis: { name: support-observability_langfuse_redis }
-  prometheus_data: { name: support-observability_prometheus_data }
-  grafana_data: { name: support-observability_grafana_data }
+  infra_obs_secrets: { name: baton-observability_secrets }  # rendered by Vault Agent; Docker-only
+  langfuse_postgres:
+  langfuse_clickhouse:
+  langfuse_clickhouse_logs:
+  langfuse_minio:
+  langfuse_redis:
+  prometheus_data:
+  grafana_data:

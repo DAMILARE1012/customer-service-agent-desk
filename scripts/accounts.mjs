@@ -25,8 +25,12 @@ async function fromVault() {
   if (!env.VAULT_ADDR || !fs.existsSync(init)) return null;
   const token = fs.readFileSync(init, 'utf8').match(/Initial Root Token: (\S+)/)?.[1];
   try {
-    const res = await fetch(`${env.VAULT_ADDR}/v1/secret/data/baton/keycloak`, { headers: { 'X-Vault-Token': token } });
-    return res.ok ? (await res.json()).data.data : null;
+    const found = {};
+    for (const path of ['keycloak', 'observability']) {
+      const res = await fetch(`${env.VAULT_ADDR}/v1/secret/data/baton/${path}`, { headers: { 'X-Vault-Token': token } });
+      if (res.ok) Object.assign(found, (await res.json()).data.data);
+    }
+    return found;
   } catch {
     return null; // Vault isn't running
   }

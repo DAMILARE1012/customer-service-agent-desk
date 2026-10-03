@@ -3,9 +3,10 @@
 With VAULT_ADDR set, the API logs in at startup — AppRole (VAULT_ROLE_ID / VAULT_SECRET_ID, or the *_FILE
 variants), or a token (VAULT_TOKEN) — and reads the KV v2 secrets in VAULT_SECRET_PATHS:
 
-    secret/baton/api              its own secrets (Groq key, widget secrets, Langfuse keys, SMTP, webhook)
+    secret/baton/api              its own secrets (Groq key, widget secrets, SMTP password, webhook)
     secret/baton/database         the database password, added to DATABASE_URL
     secret/baton/keycloak-client  the Keycloak service-account secret (Keycloak reads the same one)
+    secret/baton/langfuse-project the Langfuse project keys (Langfuse creates its project from the same)
 
 Strict: with Vault configured, every name in SECRETS comes from Vault only. A value left in the
 environment is ignored (with a warning), so a secret missing from Vault shows up as missing instead of

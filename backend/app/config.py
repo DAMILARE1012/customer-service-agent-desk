@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # ── API ────────────────────────────────────────────────────────────────
     server_port: int = Field(8787, ge=1, le=65535)
     api_workers: int = Field(1, ge=1, le=32)  # processes; the app is built to run as several (see README)
+    # uvicorn kills a worker that doesn't answer its health check in time; its default (5 s) is shorter than
+    # loading the embedding model or a busy moment, which caused restart loops in the load test.
+    api_worker_healthcheck_seconds: int = Field(60, ge=5)
+    # Math threads (PyTorch, NumPy) per process. 0 = cores ÷ API_WORKERS, so several workers don't fight over
+    # the CPU. Set it on AWS ECS/Fargate: Python sees the host's cores there, not the task's vCPUs.
+    cpu_threads_per_worker: int = Field(0, ge=0)
+    # How long an idle keep-alive connection stays open. uvicorn's default (5 s) is shorter than the widget's
+    # 4-second polling plus a slow response, and than any load balancer's idle timeout (AWS ALB: 60 s), so
+    # clients reused connections the server was closing: resets in the load test, 502s behind a proxy.
+    api_keep_alive_seconds: int = Field(65, ge=1)
     cors_origin: str = "*"
 
     # ── Support sessions ───────────────────────────────────────────────────
@@ -80,7 +90,7 @@ class Settings(BaseSettings):
     vault_secret_id: str = ""
     vault_role_id_file: str = ""  # files written by infra/vault/init.sh; relative paths are from the project root
     vault_secret_id_file: str = ""
-    vault_secret_paths: str = "secret/baton/api,secret/baton/database,secret/baton/keycloak-client"  # KV v2: <mount>/<path>, comma-separated
+    vault_secret_paths: str = "secret/baton/api,secret/baton/database,secret/baton/keycloak-client,secret/baton/langfuse-project"  # KV v2: <mount>/<path>, comma-separated
 
     # Notifications (see app/notify). Empty SMTP_HOST = emails are logged, not sent.
     baton_web_url: str = "http://localhost:5173"  # links in emails to agents

@@ -1,0 +1,64 @@
+# The API under load test as the Linux container you deploy — the right place to measure how it scales
+# with more processes (on Windows, uvicorn's workers can't reliably share a socket). Started by
+# `npm run loadtest:api -- --docker`, which passes the secrets from the local Vault and creates the
+# baton_load database. Needs the infrastructure running (npm run infra:up) and the images built
+# (npm run app:up builds them, or `docker compose ... build`).
+
+name: baton-loadtest
+
+services:
+  fake-llm:
+    image: baton-api:local  # has FastAPI and uvicorn; runs loadtest/fake_llm.py instead of the API
+    command: ["python", "/loadtest/fake_llm.py"]
+    environment:
+      FAKE_LLM_HOST: 0.0.0.0
+      FAKE_LLM_DELAY: ${FAKE_LLM_DELAY:-2}
+    ports:
+      - 127.0.0.1:8798:8798
+    volumes:
+      - .:/loadtest:ro
+    networks: [baton]
+
+  api:
+    image: baton-api:local
+    depends_on: [fake-llm]
+    environment:
+      API_WORKERS: ${LOADTEST_WORKERS:-4}
+      VAULT_ADDR: ""  # secrets are passed in by run_api.py; no Langfuse keys → no traces
+      DATABASE_URL: postgresql://baton:${LOADTEST_DB_PASSWORD:-}@db:5432/baton_load
+      GROQ_BASE_URL: http://fake-llm:8798
+      GROQ_API_KEY: loadtest-fake-llm
+      WIDGET_SIGNING_SECRET: ${LOADTEST_WIDGET_SIGNING_SECRET:-}
+      WIDGET_IDENTITY_SECRET: ${LOADTEST_WIDGET_IDENTITY_SECRET:-}
+      KEYCLOAK_URL: http://localhost:8080      # the tokens' issuer, as the agents' sign-in sees it
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      ONLINE_EVAL_SAMPLE_RATE: "0"
+      REVIEW_INTERVAL_MINUTES: "0"
+      SMTP_HOST: ""
+      WIDGET_SESSIONS_PER_HOUR: "1000000"
+      WIDGET_MESSAGES_PER_MINUTE: "100000"
+      CORS_ORIGIN: "*"
+    ports:
+      - 127.0.0.1:8799:8787
+    volumes:
+      - baton_data:/app/data:ro  # the same knowledge index and models as the app
+    networks: [baton]
+
+  # Locust on the same Docker network as the API: no Docker Desktop port forwarding in the way, which on
+  # Windows adds latency and drops connections at high rates. `npm run loadtest:docker -- -u 300 -t 3m`.
+  locust:
+    profiles: [locust]
+    image: docker.io/locustio/locust:2.46.6
+    working_dir: /mnt/locust
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080  # tokens still say http://localhost:8080 (Keycloak's fixed hostname)
+      LOADTEST_AGENT_PASSWORD: ${LOADTEST_AGENT_PASSWORD:-}
+    volumes:
+      - .:/mnt/locust
+    networks: [baton]
+
+networks:
+  baton: { external: true, name: baton_default }  # reach db and keycloak from the infrastructure
+
+volumes:
+  baton_data: { external: true, name: baton_baton_data }

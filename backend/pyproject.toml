@@ -30,6 +30,9 @@ baton-eval-rag = "app.eval.rag_cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+loadtest = [
+    "locust>=2.37",
+]
 
 # CPU-only PyTorch on Linux (Docker): the default wheel bundles ~2 GB of CUDA libraries we don't use.
 # Windows and macOS wheels from PyPI are already CPU-only.
