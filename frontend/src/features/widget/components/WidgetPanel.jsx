@@ -19,27 +19,34 @@ import { PrivacyNotice } from '../../chat/components/PrivacyNotice.jsx';
 
 function Welcome({ name, onAsk, sending }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
-      <div className="space-y-1">
-        <p className="text-lg font-semibold text-slate-900">Hi{name ? ` ${name}` : ''}, how can we help?</p>
-        <p className="text-sm text-slate-600">Ask us anything. The assistant answers from our help centre, and brings in a person when it can’t help — they’ll see everything you’ve said.</p>
+    <>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
+        <div className="space-y-1">
+          <p className="text-lg font-semibold text-slate-900">Hi{name ? ` ${name}` : ''}, how can we help?</p>
+          <p className="text-sm text-slate-600">Type your question below. The assistant answers from our help centre, and brings in a person when it can’t help — they’ll see everything you’ve said.</p>
+        </div>
+        <div className="mt-auto pt-5">
+          <p className="mb-2 text-[11px] font-medium tracking-wide text-slate-500 uppercase">Common questions</p>
+          <div className="flex flex-wrap gap-1.5">
+            {SUGGESTED_QUESTIONS.map((q) => (
+              <button
+                key={q}
+                type="button"
+                disabled={sending}
+                onClick={() => onAsk(q)}
+                className="rounded-2xl bg-white px-3 py-1.5 text-left text-xs text-slate-700 ring-1 ring-slate-200 transition hover:text-indigo-700 hover:ring-indigo-300 disabled:opacity-50"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+          <PrivacyNotice className="pt-4" />
+        </div>
       </div>
-      <div className="mt-4 space-y-2">
-        {SUGGESTED_QUESTIONS.map((q) => (
-          <button
-            key={q}
-            type="button"
-            disabled={sending}
-            onClick={() => onAsk(q)}
-            className="flex w-full items-start gap-2 rounded-xl bg-white px-3 py-2.5 text-left text-sm text-slate-700 ring-1 ring-slate-200 transition hover:text-indigo-700 hover:ring-indigo-300 disabled:opacity-50"
-          >
-            <Icon name="chat" className="mt-0.5 size-4 shrink-0 text-slate-400" />
-            {q}
-          </button>
-        ))}
+      <div className="border-t border-slate-200 bg-white p-2.5">
+        <ChatComposer onSend={onAsk} sending={sending} placeholder="Type your question…" autoFocus />
       </div>
-      <PrivacyNotice className="mt-auto pt-5" />
-    </div>
+    </>
   );
 }
 
@@ -108,7 +115,11 @@ function Thread({ conversationId, onSend, sending, onStart, starting }) {
       </div>
       <div className="border-t border-slate-200 bg-white p-2.5">
         {open ? (
-          <ChatComposer onSend={onSend} sending={sending} placeholder="Write a message…" />
+          <ChatComposer
+            onSend={onSend}
+            sending={sending}
+            placeholder={conversation.status === CONVERSATION_STATUS.HANDOFF_PENDING ? 'Add details for the team…' : 'Write a message…'}
+          />
         ) : (
           <div className="space-y-2 px-1 py-1 text-center">
             <p className="text-xs text-slate-600">{CLOSED_REASON_META[conversation.closedReason]?.customerText ?? 'This conversation has ended.'}</p>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Icon, Spinner } from '../../../components/ui/index.js';
 
 /** Enter sends, Shift+Enter adds a line. */
-export function ChatComposer({ onSend, sending, placeholder = 'Ask a question…' }) {
+export function ChatComposer({ onSend, sending, placeholder = 'Ask a question…', autoFocus = false }) {
   const [text, setText] = useState('');
 
   const submit = (event) => {
@@ -22,6 +22,7 @@ export function ChatComposer({ onSend, sending, placeholder = 'Ask a question…
           if (e.key === 'Enter' && !e.shiftKey) submit(e);
         }}
         rows={1}
+        autoFocus={autoFocus}
         maxLength={4000}
         placeholder={placeholder}
         aria-label="Message"

@@ -85,6 +85,32 @@ def test_role_boundaries(client):
     assert client.as_(JADE).get("/conversations").status_code == 200
 
 
+def test_messages_while_waiting_reach_the_brief_and_can_raise_priority(client):
+    conversation_id = start(client)
+    say(client, conversation_id, "I want to talk to a real person please")
+    queued = next(c for c in client.as_(ALEX).get("/conversations").json() if c["id"] == conversation_id)
+    assert queued["handoff"]["priority"] == "normal" and queued["handoff"]["addedWhileWaiting"] == 0
+
+    # The bot stays quiet, but says once that the message reached the team.
+    body = say(client, conversation_id, "Actually there's an unauthorized charge of $89.00 on my card").json()
+    assert body["status"] == "handoff_pending"
+    assert [m["sender"] for m in body["messages"][-2:]] == ["customer", "bot"] and "added that to your request" in body["messages"][-1]["text"]
+    body = say(client, conversation_id, "It happened yesterday").json()
+    assert body["messages"][-1]["sender"] == "customer"  # no second acknowledgement
+    assert "Priority" not in str(body)  # the escalation is for agents only
+
+    queued = next(c for c in client.as_(ALEX).get("/conversations").json() if c["id"] == conversation_id)
+    assert queued["handoff"]["priority"] == "urgent" and queued["handoff"]["addedWhileWaiting"] == 2
+    brief = client.as_(ALEX).get(f"/conversations/{conversation_id}").json()["handoff"]
+    assert [m["text"] for m in brief["addedWhileWaiting"]] == ["Actually there's an unauthorized charge of $89.00 on my card", "It happened yesterday"]
+    assert brief["escalated"]["from"] == "normal" and brief["escalated"]["to"] == "urgent"
+    assert any(e["value"] == "$89.00" for e in brief["entities"])
+
+    # A calmer message later never lowers it again.
+    say(client, conversation_id, "Thanks, I'll wait")
+    assert client.as_(ALEX).get(f"/conversations/{conversation_id}").json()["handoff"]["priority"] == "urgent"
+
+
 def test_agent_identity_comes_from_the_token(client):
     conversation_id = start(client)
     say(client, conversation_id, "I want to talk to a real person please")

@@ -10,7 +10,9 @@ several processes starting together migrate once.
 """
 
 import asyncio
+import functools
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date
 
@@ -205,6 +207,11 @@ ALTER TABLE customers ADD COLUMN external_id text UNIQUE;          -- your websi
 ALTER TABLE customers ADD COLUMN is_visitor boolean NOT NULL DEFAULT false;
 """
 
+# v5: a bot turn in progress, so the LLM call runs without holding the conversation locked.
+V5_BOT_TURN = """
+ALTER TABLE conversations ADD COLUMN bot_turn jsonb;               -- {messageId, startedAt} while the bot answers
+"""
+
 TABLE: dict[Kind, str] = {"customer": "customers", "agent": "agents", "admin": "admins"}
 COLUMNS: dict[Kind, dict[str, str]] = {
     "customer": {"id": "id", "keycloakId": "keycloak_id", "email": "email", "name": "name", "tier": "tier", "location": "location",
@@ -273,6 +280,7 @@ def _head(row: dict) -> dict:
         "traceIds": list(row["trace_ids"] or []),
         "reviewedAt": row["reviewed_at"],
         "anonymizedAt": row["anonymized_at"],
+        "botTurn": row.get("bot_turn"),
         "handoff": row.get("current_handoff"),
         "handoffHistory": [],
         "lastMessage": {"sender": row["lm_sender"], "text": row["lm_text"], "createdAt": row["lm_at"]} if row.get("lm_sender") else None,
@@ -317,26 +325,48 @@ def _filter_sql(f: ConversationFilter) -> tuple[str, list]:
     return (" WHERE " + " AND ".join(where)) if where else "", params
 
 
+POOL_SIZE = 20
+RESERVED_CONNECTIONS = 2  # for synchronous callers outside the async limiter (the Prometheus scrape)
+
+
 class PostgresRepository(Repository):
+    """Database work runs on its own threads, one per connection — never on the default executor, where
+    retrieval's CPU work could crowd it out. A request waits for a free connection in the event loop
+    (`_slots`) before it takes a thread, so no thread ever sits blocked waiting for a connection: under
+    load, requests queue instead of deadlocking."""
+
     def __init__(self, url: str) -> None:
-        # Bot turns hold their conversation's connection for the LLM call: size the pool for concurrent turns.
         self.pool = ConnectionPool(
-            url, min_size=2, max_size=20, open=False, kwargs={"row_factory": dict_row, "autocommit": True, "connect_timeout": 5}
+            url, min_size=2, max_size=POOL_SIZE, open=False, kwargs={"row_factory": dict_row, "autocommit": True, "connect_timeout": 5}
         )
+        self._threads = ThreadPoolExecutor(max_workers=POOL_SIZE, thread_name_prefix="baton-db")
+        self._slots: asyncio.Semaphore | None = None
+
+    async def _call(self, fn, *args, **kwargs):
+        return await asyncio.get_running_loop().run_in_executor(self._threads, functools.partial(fn, *args, **kwargs))
+
+    @asynccontextmanager
+    async def _connection(self):
+        if self._slots is None:
+            self._slots = asyncio.Semaphore(POOL_SIZE - RESERVED_CONNECTIONS)
+        async with self._slots:
+            conn = await self._call(self.pool.getconn)
+            try:
+                yield conn
+            finally:
+                await self._call(self.pool.putconn, conn)
 
     async def _run(self, fn):
-        def work():
-            with self.pool.connection() as conn:
-                return fn(conn)
-
-        return await asyncio.to_thread(work)
+        async with self._connection() as conn:
+            return await self._call(fn, conn)
 
     async def start(self) -> None:
-        await asyncio.to_thread(self.pool.open, wait=True, timeout=15)
+        await self._call(self.pool.open, wait=True, timeout=15)
         await self._run(self._migrate)
 
     async def close(self) -> None:
-        await asyncio.to_thread(self.pool.close)
+        await self._call(self.pool.close)
+        self._threads.shutdown(wait=False)
 
     # ── Migrations ──
 
@@ -362,6 +392,9 @@ class PostgresRepository(Repository):
             if version < 4:
                 conn.execute(V4_WIDGET_CUSTOMERS)
                 conn.execute("INSERT INTO schema_version (version) VALUES (4)")
+            if version < 5:
+                conn.execute(V5_BOT_TURN)
+                conn.execute("INSERT INTO schema_version (version) VALUES (5)")
 
     # ── People ──
 
@@ -480,6 +513,7 @@ class PostgresRepository(Repository):
              c["createdAt"], c["updatedAt"], c["closedAt"], c["closedReason"], c["customerSeenAt"], c["traceIds"],
              c["reviewedAt"], c["anonymizedAt"]),
         )  # fmt: skip
+        # bot_turn is left NULL: a new conversation has no turn in progress (_save writes it from then on).
         self._write_children(conn, c, messages_from=0)
 
     def _write_children(self, conn, c: dict, messages_from: int) -> None:
@@ -499,7 +533,7 @@ class PostgresRepository(Repository):
             conn.execute(
                 """INSERT INTO handoffs (id, conversation_id, seq, current, status, reason, priority, requested_at, accepted_at, accepted_by_id, packet)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (id) DO UPDATE SET seq = EXCLUDED.seq, current = EXCLUDED.current, status = EXCLUDED.status,
+                   ON CONFLICT (id) DO UPDATE SET seq = EXCLUDED.seq, current = EXCLUDED.current, status = EXCLUDED.status, priority = EXCLUDED.priority,
                        accepted_at = EXCLUDED.accepted_at, accepted_by_id = EXCLUDED.accepted_by_id, packet = EXCLUDED.packet""",
                 (p["id"], c["id"], seq, p is c["handoff"], str(p["status"]), str(p["reason"]), str(p["priority"]), p["requestedAt"],
                  p.get("acceptedAt"), (p.get("acceptedBy") or {}).get("id"), Jsonb(p)),
@@ -534,34 +568,34 @@ class PostgresRepository(Repository):
 
     @asynccontextmanager
     async def transaction(self, conversation_id: str):
-        conn = await asyncio.to_thread(self.pool.getconn)
-        conn.autocommit = False
-        try:
-            conversation = await asyncio.to_thread(self._load, conn, conversation_id, lock=True)
-            loaded_messages = len(conversation["messages"]) if conversation else 0
+        async with self._connection() as conn:
+            conn.autocommit = False
             try:
-                yield conversation
-            except BaseException:
-                await asyncio.to_thread(conn.rollback)
-                raise
-            if conversation is not None:
-                await asyncio.to_thread(self._save, conn, conversation, loaded_messages)
-            await asyncio.to_thread(conn.commit)
-        finally:
-            if conn.info.transaction_status != 0:  # still in a transaction (e.g. the save failed): roll back
-                await asyncio.to_thread(conn.rollback)
-            conn.autocommit = True
-            await asyncio.to_thread(self.pool.putconn, conn)
+                conversation = await self._call(self._load, conn, conversation_id, lock=True)
+                loaded_messages = len(conversation["messages"]) if conversation else 0
+                try:
+                    yield conversation
+                except BaseException:
+                    await self._call(conn.rollback)
+                    raise
+                if conversation is not None:
+                    await self._call(self._save, conn, conversation, loaded_messages)
+                await self._call(conn.commit)
+            finally:
+                if conn.info.transaction_status != 0:  # still in a transaction (e.g. the save failed): roll back
+                    await self._call(conn.rollback)
+                conn.autocommit = True
 
     def _save(self, conn, c: dict, loaded_messages: int) -> None:
         conn.execute(
             """UPDATE conversations SET status = %s, assignee_id = %s, assignee = %s, subject = %s, customer = %s, insights = %s,
                    copilot = %s, follow_up_of_id = %s, follow_up = %s, updated_at = %s, closed_at = %s, closed_reason = %s,
-                   customer_seen_at = GREATEST(customer_seen_at, %s), trace_ids = %s, reviewed_at = %s, anonymized_at = %s
+                   customer_seen_at = GREATEST(customer_seen_at, %s), trace_ids = %s, reviewed_at = %s, anonymized_at = %s,
+                   bot_turn = %s
                WHERE id = %s""",
             (str(c["status"]), (c["assignee"] or {}).get("id"), Jsonb(c["assignee"]), c["subject"], Jsonb(c["customer"]), Jsonb(c["insights"]),
              Jsonb(c["copilot"]), (c["followUpOf"] or {}).get("id"), Jsonb(c["followUpOf"]), c["updatedAt"], c["closedAt"], c["closedReason"],
-             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], c["id"]),
+             c["customerSeenAt"], c["traceIds"], c["reviewedAt"], c["anonymizedAt"], Jsonb(c.get("botTurn")), c["id"]),
         )  # fmt: skip
         if c.get("_rewriteMessages"):  # anonymisation rewrites the transcript in place
             c.pop("_rewriteMessages")
@@ -720,13 +754,10 @@ class PostgresRepository(Repository):
     async def exclusive(self, name: str):
         """Session-level advisory lock on a dedicated connection: one runner of a job across processes."""
         key = int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
-        conn = await asyncio.to_thread(self.pool.getconn)
-        try:
-            acquired = (await asyncio.to_thread(lambda: conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (key,)).fetchone()))["ok"]
+        async with self._connection() as conn:
+            acquired = (await self._call(lambda: conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (key,)).fetchone()))["ok"]
             try:
                 yield acquired
             finally:
                 if acquired:
-                    await asyncio.to_thread(lambda: conn.execute("SELECT pg_advisory_unlock(%s)", (key,)))
-        finally:
-            await asyncio.to_thread(self.pool.putconn, conn)
+                    await self._call(lambda: conn.execute("SELECT pg_advisory_unlock(%s)", (key,)))

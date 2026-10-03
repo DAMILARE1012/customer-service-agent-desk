@@ -1,6 +1,7 @@
 """Conversations, read straight from storage on every request (no per-process copy), so any number of
 API processes can serve them. Every change goes through `transaction(id)`, which locks the
-conversation until the operation — bot turn included — has been saved.
+conversation until the change is saved. LLM calls happen between transactions, never inside one
+(see engine.py).
 """
 
 from contextlib import asynccontextmanager
@@ -94,7 +95,12 @@ def to_summary(conversation: dict) -> dict:
         "updatedAt": conversation["updatedAt"],
         "customer": {"id": customer["id"], "name": customer["name"], "tier": customer["tier"]},
         "lastMessage": last,
-        "handoff": {k: handoff[k] for k in ("reason", "priority", "requestedAt", "acceptedAt")} if handoff else None,
+        "handoff": {
+            **{k: handoff[k] for k in ("reason", "priority", "requestedAt", "acceptedAt")},
+            "addedWhileWaiting": len(handoff.get("addedWhileWaiting") or []),
+        }
+        if handoff
+        else None,
         "sentiment": conversation["insights"]["sentiment"]["current"],
         "lastConfidence": conversation["insights"]["lastConfidence"],
         "closedReason": conversation.get("closedReason"),

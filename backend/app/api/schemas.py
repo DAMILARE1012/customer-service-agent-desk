@@ -123,6 +123,19 @@ class Procedure(Model):
     similarity: float
 
 
+class AddedWhileWaiting(Model):
+    id: str
+    text: str
+    at: int
+
+
+class Escalation(Model):
+    from_: Priority = Field(alias="from")
+    to: Priority
+    why: str
+    at: int
+
+
 class Handoff(Model):
     """The brief the agent receives: everything the bot knew when it stepped aside."""
 
@@ -147,6 +160,8 @@ class Handoff(Model):
     suggested_next_steps: list[str]
     procedure: Procedure | None = None
     returned_at: int | None = None
+    added_while_waiting: list[AddedWhileWaiting] = []  # customer messages since the bot stepped aside
+    escalated: Escalation | None = None  # priority raised by something added while waiting
 
 
 class Insights(Model):
@@ -217,6 +232,7 @@ class SummaryHandoff(Model):
     priority: Priority
     requested_at: int
     accepted_at: int | None
+    added_while_waiting: int = 0
 
 
 class ConversationSummary(Model):

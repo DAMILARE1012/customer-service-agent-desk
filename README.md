@@ -27,7 +27,7 @@ Baton treats the handoff as a **first-class state** of every conversation, with 
 
 <p align="center"><img src="docs/architecture.png" alt="Baton architecture: the staff app with Keycloak, the chat widget on a customer’s website, FastAPI API, Postgres, knowledge index, Groq, observability and offline ingestion" width="1000" /></p>
 
-Customers chat through a **widget** embedded on the company’s website; agents and admins use the **staff app**, signed in with Keycloak. The FastAPI API accepts two kinds of token — Keycloak tokens for staff, widget session tokens for customers — and checks one on every request. Conversations live in Postgres and every change runs inside a row-locked transaction, so the API can run as several processes. Answers come from a local hybrid index (vectors + BM25) and Groq. Langfuse holds traces and evaluation runs; Prometheus and Grafana watch the desk and the LLM. *Edit the diagram:* open [`docs/architecture.drawio`](docs/architecture.drawio) in [draw.io](https://app.diagrams.net).
+Customers chat through a **widget** embedded on the company’s website; agents and admins use the **staff app**, signed in with Keycloak. The FastAPI API accepts two kinds of token — Keycloak tokens for staff, widget session tokens for customers — and checks one on every request. Conversations live in Postgres and every change runs inside a short row-locked transaction, so the API can run as several processes; the LLM is called between transactions, never while a conversation is locked, so a slow model can’t stall the rest of the app. Answers come from a local hybrid index (vectors + BM25) and Groq. Langfuse holds traces and evaluation runs; Prometheus and Grafana watch the desk and the LLM. *Edit the diagram:* open [`docs/architecture.drawio`](docs/architecture.drawio) in [draw.io](https://app.diagrams.net).
 
 ## How it works
 
@@ -44,6 +44,8 @@ Customers chat through a **widget** embedded on the company’s website; agents 
 | Agent took over | an agent steps in from the live queue | — |
 
 **One bot turn.** Conversation-level checks run first (no LLM). Then hybrid retrieval; if nothing is close enough the question is out of scope. Otherwise the LLM answers from numbered sources and must cite them — an uncited answer counts as “can’t answer”.
+
+**While the customer waits.** The bot stays quiet — they asked for a person — but nothing they add is lost: each message lands in the brief under *Added while waiting*, extracted details and sentiment refresh, and anything more urgent (a sensitive topic, rising frustration) raises the priority so they move up the queue; it never lowers it. The customer is told once that their messages reach the team, and the queue shows the agent “+N new”.
 
 **Sessions.** A conversation is one support session and never reopens. It closes when an agent resolves it, the customer ends it, nobody writes for 30 minutes, or a customer waiting for an agent has left (their chat window stopped polling). A customer has at most one live session; reloading rejoins it. **Follow up on this** starts a new session linked to the old one — the agent sees the link and the customer’s timeline; the bot only ever sees the current session.
 
@@ -65,13 +67,11 @@ Customers chat through a **widget** embedded on the company’s website; agents 
 
 ## Screenshots
 
-| Widget: on the website | Widget: cited answer | Widget: an agent took over |
+| Widget: on the website | Widget: type a question | Widget: cited answer |
 |---|---|---|
-| ![The chat launcher over a shop page](docs/screenshots/widget-closed.png) | ![Cited answer in the widget](docs/screenshots/widget-open.png) | ![Agent reply in the widget](docs/screenshots/widget-agent-reply.png) |
-| **Agent: handoff brief** | **Agent: follow-up and timeline** | **Widget: a signed-in shopper’s history** |
-| ![Handoff brief](docs/screenshots/agent-handoff-brief.png) | ![Follow-up and timeline](docs/screenshots/agent-timeline.png) | ![Identified customer’s conversations](docs/screenshots/widget-identified.png) |
-| **Admin: overview** | **Admin: review queue** | **Admin: erasure** |
-| ![Overview](docs/screenshots/admin-overview.png) | ![Review queue](docs/screenshots/admin-review.png) | ![Erasure report](docs/screenshots/admin-erasure.png) |
+| ![The chat launcher over a shop page](docs/screenshots/widget-closed.png) | ![The widget welcome screen with a message box](docs/screenshots/widget-welcome.png) | ![Cited answer in the widget](docs/screenshots/widget-open.png) |
+| **Widget: an agent took over** | **Agent: handoff brief** | **Agent: follow-up and timeline** |
+| ![Agent reply in the widget](docs/screenshots/widget-agent-reply.png) | ![Handoff brief](docs/screenshots/agent-handoff-brief.png) | ![Follow-up and timeline](docs/screenshots/agent-timeline.png) |
 
 More in [`docs/screenshots/`](docs/screenshots/).
 
@@ -178,7 +178,7 @@ docs/           architecture diagram (draw.io) and screenshots
 scripts/        accounts.mjs (npm run accounts)
 ```
 
-`npm test` runs 97 backend tests with no network or keys; 5 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
+`npm test` runs 101 backend tests with no network or keys; 5 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
 
 ## Limitations
 

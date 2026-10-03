@@ -75,7 +75,7 @@ def new_visitor() -> dict:
 # Conversation fields added after the first release; older stored conversations get them on read.
 CONVERSATION_DEFAULTS = {
     "closedAt": None, "closedReason": None, "followUpOf": None, "customerSeenAt": None,
-    "traceIds": [], "reviewedAt": None, "anonymizedAt": None,
+    "traceIds": [], "reviewedAt": None, "anonymizedAt": None, "botTurn": None,
 }  # fmt: skip
 
 

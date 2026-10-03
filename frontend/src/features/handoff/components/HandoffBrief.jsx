@@ -1,4 +1,5 @@
 import { Section } from '../../../components/ui/index.js';
+import { AddedWhileWaiting } from './AddedWhileWaiting.jsx';
 import { BotAttempts } from './BotAttempts.jsx';
 import { EntityList } from './EntityList.jsx';
 import { HandoffReasonCard } from './HandoffReasonCard.jsx';
@@ -9,7 +10,7 @@ import { SuggestedNextSteps } from './SuggestedNextSteps.jsx';
 
 /**
  * The handoff packet, ordered the way an agent reads it:
- * why → what's going on → what's still open → what to do → the facts → the history.
+ * why → what the customer added since → what's going on → what's still open → what to do → the facts → the history.
  */
 export function HandoffBrief({ handoff }) {
   return (
@@ -17,6 +18,7 @@ export function HandoffBrief({ handoff }) {
       <Section title="Why the bot stepped aside" icon="arrowRight">
         <HandoffReasonCard handoff={handoff} />
       </Section>
+      <AddedWhileWaiting messages={handoff.addedWhileWaiting} escalated={handoff.escalated} />
       <HandoffSummary summary={handoff.summary} intent={handoff.intent} />
       <OpenQuestions questions={handoff.openQuestions} />
       <SuggestedNextSteps steps={handoff.suggestedNextSteps} />

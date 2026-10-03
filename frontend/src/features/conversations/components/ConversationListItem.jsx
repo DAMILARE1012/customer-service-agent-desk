@@ -42,6 +42,11 @@ function ConversationListItemBase({ conversation, selected, onSelect, now }) {
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {pending ? <HandoffReasonBadge reason={handoff.reason} /> : <StatusBadge status={status} />}
+            {pending && handoff.addedWhileWaiting > 0 && (
+              <span className="rounded-full bg-indigo-600 px-1.5 text-[10px] font-semibold text-white" title="Messages the customer sent while waiting">
+                +{handoff.addedWhileWaiting} new
+              </span>
+            )}
             {pending && handoff.priority !== 'normal' && (
               <span className="text-[11px] font-medium text-slate-500">{PRIORITY_META[handoff.priority].label}</span>
             )}

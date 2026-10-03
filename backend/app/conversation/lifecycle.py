@@ -13,12 +13,14 @@ from app.conversation.constants import (
     ClosedReason,
     HandoffReason,
     HandoffStatus,
+    Priority,
     Sender,
     Status,
     SystemEvent,
 )
 from app.conversation.packet import build_handoff_packet
-from app.conversation.signals import extract_entities, merge_entities, score_sentiment
+from app.conversation.policy import compute_priority, conversation_signals
+from app.conversation.signals import extract_entities, merge_entities, score_sentiment, sentiment_label
 from app.conversation.util import next_id, round2
 
 
@@ -76,6 +78,7 @@ def create_conversation(customer: dict, now: int, follow_up_of: dict | None = No
         "handoff": None,
         "handoffHistory": [],
         "copilot": None,
+        "botTurn": None,  # {messageId, startedAt} while the bot answers — see engine.py
     }
 
 
@@ -112,7 +115,35 @@ def request_handoff(conversation: dict, decision: dict, trigger_message: dict | 
     conversation["status"] = Status.HANDOFF_PENDING
 
 
+PRIORITY_RANK = {Priority.NORMAL: 0, Priority.HIGH: 1, Priority.URGENT: 2}
+WAITING_ACK = "Thanks — I’ve added that to your request, so the team will see it as soon as they join. Add anything else that might help."
+
+
+def note_while_waiting(conversation: dict, message: dict, sentiment: float, now: int) -> None:
+    """A customer message while the handoff waits. The bot stays quiet — they asked for a person — but the
+    brief the agent will read stays current, and new urgency moves the case up the queue (never down).
+    The customer is told once that their messages reach the team, not after every message."""
+    handoff, insights = conversation["handoff"], conversation["insights"]
+    added = [*handoff.get("addedWhileWaiting", []), {"id": message["id"], "text": message["text"], "at": now}]
+    handoff.update(
+        addedWhileWaiting=added,
+        entities=insights["entities"],
+        sentiment={"current": sentiment, "label": sentiment_label(sentiment), "trend": insights["sentiment"]["trend"]},
+    )
+    sensitive = next((s for s in conversation_signals(message["text"], sentiment) if s["reason"] == HandoffReason.SENSITIVE_TOPIC), None)
+    priority = compute_priority(HandoffReason.SENSITIVE_TOPIC if sensitive else handoff["reason"], sentiment, conversation["customer"]["tier"])
+    if PRIORITY_RANK[priority] > PRIORITY_RANK[handoff["priority"]]:
+        why = sensitive["detail"] if sensitive else f"Sentiment fell to {sentiment:.2f} while waiting."
+        handoff.update(priority=priority, escalated={"from": handoff["priority"], "to": priority, "why": why, "at": now})
+        add_system_event(conversation, SystemEvent.PRIORITY_RAISED, f"Priority raised to {priority} — {why}", now, priority=str(priority))
+    if len(added) == 1:
+        add_bot_message(conversation, WAITING_ACK, now, {"kind": BotReplyKind.SMALL_TALK, "confidence": None, "sources": []})
+
+
 def last_open_question(conversation: dict) -> str | None:
+    added = (conversation.get("handoff") or {}).get("addedWhileWaiting") or []
+    if added:  # what the customer said most recently, while waiting, is what the agent should answer first
+        return added[-1]["text"]
     open_questions = (conversation.get("handoff") or {}).get("openQuestions") or []
     if open_questions:
         return open_questions[-1]
@@ -134,7 +165,7 @@ def take_over(conversation: dict, agent: dict, now: int) -> None:
     primary = {"reason": HandoffReason.AGENT_INITIATED, "detail": f"{agent['name']} took over from the live bot queue."}
     decision = {"primary": primary, "signals": [primary]}
     conversation["handoff"] = build_handoff_packet(conversation, decision, trigger_message=None, now=now, packet_id=next_id("hof"))
-    conversation["status"] = Status.HANDOFF_PENDING
+    conversation.update(status=Status.HANDOFF_PENDING, botTurn=None)  # a bot reply still being written is dropped
     add_system_event(conversation, SystemEvent.AGENT_TOOK_OVER, f"{agent['name']} took over from the bot", now, agentId=agent["id"])
     accept_handoff(conversation, agent, now)
 
@@ -169,7 +200,7 @@ def close_conversation(conversation: dict, reason: ClosedReason, now: int, actor
     assert_status(conversation, OPEN, "close the conversation")
     if conversation["status"] == Status.HANDOFF_PENDING and conversation["handoff"]:
         conversation["handoff"]["status"] = HandoffStatus.ABANDONED
-    conversation.update(status=Status.RESOLVED, copilot=None, closedReason=reason, closedAt=now)
+    conversation.update(status=Status.RESOLVED, copilot=None, botTurn=None, closedReason=reason, closedAt=now)
     note = CLOSED_NOTE[reason].format(actor=actor["name"] if actor else "the bot", minutes=round(settings.session_idle_minutes))
     add_system_event(conversation, SystemEvent.RESOLVED, note, now, closedReason=reason)
 

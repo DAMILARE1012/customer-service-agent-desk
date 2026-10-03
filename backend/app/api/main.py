@@ -316,10 +316,8 @@ async def end_conversation(conversation_id: str, customer: dict = Depends(curren
 @app.post("/me/conversations/{conversation_id}/messages", response_model=schemas.CustomerConversation, tags=["customer"], name="customer_message")
 async def customer_message(conversation_id: str, body: schemas.CustomerMessage, customer: dict = Depends(current_customer)):
     message_limiter.check(customer["id"])
-    # Locked for the whole turn (LLM call included): one operation per conversation at a time, in order.
-    async with store.own_transaction(conversation_id, customer) as conversation:
-        await engine.receive_customer_message(conversation, body.text.strip(), now_ms())
-    return customer_view(conversation)
+    # Locked only to record the message and to save the reply — never during the LLM call (see engine.py).
+    return customer_view(await engine.receive_customer_message(conversation_id, customer, body.text.strip()))
 
 
 # ── Agents: the desk ─────────────────────────────────────────────────────────
@@ -374,9 +372,7 @@ async def agent_message(conversation_id: str, body: schemas.AgentMessage, agent:
 @app.post("/conversations/{conversation_id}/handoff/accept", response_model=schemas.Conversation, tags=["handoff"], name="accept_handoff")
 async def accept_handoff(conversation_id: str, agent: dict = Depends(current_agent)):
     await _check_capacity(agent)
-    async with store.transaction(conversation_id) as current:
-        await engine.accept_handoff(current, agent, now_ms())
-    return current
+    return await engine.accept_handoff(conversation_id, agent)
 
 
 @app.post("/conversations/{conversation_id}/handoff/return", response_model=schemas.Conversation, tags=["handoff"], name="return_to_bot")
@@ -390,9 +386,7 @@ async def return_to_bot(conversation_id: str, agent: dict = Depends(current_agen
 @app.post("/conversations/{conversation_id}/takeover", response_model=schemas.Conversation, tags=["handoff"], name="take_over")
 async def take_over(conversation_id: str, agent: dict = Depends(current_agent)):
     await _check_capacity(agent)
-    async with store.transaction(conversation_id) as current:
-        await engine.take_over(current, agent, now_ms())
-    return current
+    return await engine.take_over(conversation_id, agent)
 
 
 @app.post("/conversations/{conversation_id}/resolve", response_model=schemas.Conversation, tags=["desk"], name="resolve")

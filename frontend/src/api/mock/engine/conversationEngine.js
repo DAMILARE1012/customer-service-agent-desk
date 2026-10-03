@@ -2,9 +2,9 @@ import { BOT_REPLY_KIND, CLOSED_REASON, CONVERSATION_STATUS, SENDER, SYSTEM_EVEN
 import { HANDOFF_REASON, HANDOFF_REASON_META, HANDOFF_STATUS } from '../../../constants/handoff.js';
 import { extractEntities, mergeEntities } from './entities.js';
 import { buildHandoffPacket } from './handoffPacket.js';
-import { HANDOFF_POLICY, detectSmallTalk, evaluateHandoff } from './handoffPolicy.js';
+import { HANDOFF_POLICY, SENSITIVE_TOPICS, computePriority, detectSmallTalk, evaluateHandoff } from './handoffPolicy.js';
 import { retrieve, toSourceRef } from './retrieval.js';
-import { scoreSentiment } from './sentiment.js';
+import { scoreSentiment, sentimentLabel } from './sentiment.js';
 import { truncate } from './text.js';
 
 export class ApiError extends Error {
@@ -109,9 +109,31 @@ export function receiveCustomerMessage(conversation, text, now) {
 
   if (conversation.status === BOT_ACTIVE) runBotTurn(conversation, message, sentiment, now);
   else if (conversation.status === AGENT_ACTIVE) conversation.copilot = draftCopilotReply(text);
-  // HANDOFF_PENDING: the bot has stepped aside; it just keeps listening so the packet stays useful.
+  else if (conversation.status === HANDOFF_PENDING) noteWhileWaiting(conversation, message, sentiment, now);
 
   return conversation;
+}
+
+const PRIORITY_RANK = { normal: 0, high: 1, urgent: 2 };
+export const WAITING_ACK = 'Thanks — I’ve added that to your request, so the team will see it as soon as they join. Add anything else that might help.';
+
+/** A message while the handoff waits: the bot stays quiet, the brief stays current, urgency only goes up. */
+function noteWhileWaiting(conversation, message, sentiment, now) {
+  const { handoff, insights } = conversation;
+  const added = [...(handoff.addedWhileWaiting ?? []), { id: message.id, text: message.text, at: now }];
+  Object.assign(handoff, {
+    addedWhileWaiting: added,
+    entities: insights.entities,
+    sentiment: { current: sentiment, label: sentimentLabel(sentiment), trend: insights.sentiment.trend },
+  });
+  const sensitive = SENSITIVE_TOPICS.find(({ pattern }) => pattern.test(message.text));
+  const priority = computePriority({ reason: sensitive ? HANDOFF_REASON.SENSITIVE_TOPIC : handoff.reason, sentiment, tier: conversation.customer.tier });
+  if (PRIORITY_RANK[priority] > PRIORITY_RANK[handoff.priority]) {
+    const why = sensitive ? `${sensitive.topic} — policy requires a human.` : `Sentiment fell to ${sentiment.toFixed(2)} while waiting.`;
+    Object.assign(handoff, { priority, escalated: { from: handoff.priority, to: priority, why, at: now } });
+    addSystemEvent(conversation, SYSTEM_EVENT.PRIORITY_RAISED, `Priority raised to ${priority} — ${why}`, now, { priority });
+  }
+  if (added.length === 1) addBotMessage(conversation, WAITING_ACK, now, { kind: BOT_REPLY_KIND.SMALL_TALK, confidence: null, sources: [] });
 }
 
 function runBotTurn(conversation, message, sentiment, now) {
@@ -195,6 +217,8 @@ export function requestHandoff(conversation, decision, triggerMessage, now) {
 // ─── agent actions ────────────────────────────────────────────────────────────
 
 export function lastOpenQuestion(conversation) {
+  const added = conversation.handoff?.addedWhileWaiting ?? [];
+  if (added.length) return added.at(-1).text;
   const open = conversation.handoff?.openQuestions ?? [];
   if (open.length) return open.at(-1);
   return conversation.messages.findLast((m) => m.sender === SENDER.CUSTOMER)?.text ?? null;

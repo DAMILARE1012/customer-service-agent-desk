@@ -1,16 +1,32 @@
 """Conversation operations for the API. Each one is a Langfuse trace, grouped by conversation (session)
-and customer (user); state transitions come from lifecycle.py, bot turns from bot.py."""
+and customer (user); state transitions come from lifecycle.py, bot turns from bot.py.
 
+No database connection is held while the LLM works. Operations that need it run in three steps:
+
+    1. locked     apply the change and, for a bot turn, claim it (conversation["botTurn"])
+    2. unlocked   the LLM work (bot turn, copilot draft) on a copy of the conversation
+    3. locked     save the result only if it still applies — an agent may have taken over, or the
+                  customer ended the chat, while the LLM was working; then the result is dropped
+
+A customer message that arrives while a bot turn is in progress waits for it, holding nothing, so turns
+stay in order. A claim left behind by a crashed process expires after BOT_TURN_STALE_MS.
+"""
+
+import asyncio
+import copy
+import logging
 import re
 
-from app.conversation import lifecycle
+from app.config import settings
+from app.conversation import lifecycle, store
 from app.conversation.bot import bot_turn, draft_copilot
 from app.conversation.constants import ClosedReason, HandoffReason, Sender, Status
 from app.conversation.lifecycle import ApiError
-from app.conversation.util import truncate
+from app.conversation.util import now_ms, truncate
 from app.observability.metrics import conversations_closed, copilot_drafts, handoff_wait, handoffs, label
 from app.observability.tracing import current_trace_id, observe, trace_attributes
 
+log = logging.getLogger(__name__)
 create_conversation = lifecycle.create_conversation
 return_to_bot = lifecycle.return_to_bot
 
@@ -50,53 +66,135 @@ def _traced(conversation: dict, name: str):
     )
 
 
-async def receive_customer_message(conversation: dict, text: str, now: int) -> dict:
-    with _traced(conversation, "customer-message"), observe("customer-message", input=text) as span:
-        _remember_trace(conversation)
-        if conversation["status"] == Status.RESOLVED:
-            # Sessions don't reopen: a returning customer starts fresh (optionally as a linked follow-up).
-            raise ApiError(409, "This conversation has ended. Start a new one — you can link it to this one as a follow-up.")
-        conversation["customerSeenAt"] = now
+def bot_turn_stale_ms() -> int:
+    """Longer than any bot turn can take: every LLM attempt timing out, plus a JSON retry and retrieval."""
+    return settings.llm_timeout_ms * (settings.llm_max_retries + 1) * 2 + 30_000
 
-        message = lifecycle.add_message(conversation, {"sender": Sender.CUSTOMER, "text": text, "createdAt": now})
-        conversation["subject"] = conversation["subject"] or truncate(text, 70)
-        sentiment = lifecycle.track_signals(conversation, message)
 
-        outcome = None
-        if conversation["status"] == Status.BOT_ACTIVE:
-            outcome = await bot_turn(conversation, message, sentiment, now)
-        elif conversation["status"] == Status.AGENT_ACTIVE:
-            conversation["copilot"] = await draft_copilot(conversation, text)
-        # HANDOFF_PENDING: the bot has stepped aside and just listens.
+TURN_WAIT_S = 0.25  # how often a message queued behind a bot turn checks whether it's done
 
-        # What the trace list shows: the bot's reply, or why it stepped aside.
-        if outcome and outcome.get("reply"):
-            reply = outcome["reply"]
-        elif outcome and outcome["kind"] == "handed_off":
-            reply = f"[handed off: {outcome['reason']}]"
-        else:
-            reply = f"[{conversation['status']}: bot not replying]"
-        span.update(output=reply, metadata={"status": conversation["status"], "outcome": outcome["kind"] if outcome else "none"})
+
+def _turn_in_progress(conversation: dict, now: int) -> bool:
+    turn = conversation.get("botTurn")
+    return bool(turn) and conversation["status"] == Status.BOT_ACTIVE and now - turn["startedAt"] < bot_turn_stale_ms()
+
+
+def accept_customer_message(conversation: dict, text: str, now: int) -> dict | None:
+    """Step 1 of a customer message (locked, no LLM): record it and say what LLM work it needs, if any."""
+    if conversation["status"] == Status.RESOLVED:
+        # Sessions don't reopen: a returning customer starts fresh (optionally as a linked follow-up).
+        raise ApiError(409, "This conversation has ended. Start a new one — you can link it to this one as a follow-up.")
+    conversation["customerSeenAt"] = now
+    message = lifecycle.add_message(conversation, {"sender": Sender.CUSTOMER, "text": text, "createdAt": now})
+    conversation["subject"] = conversation["subject"] or truncate(text, 70)
+    sentiment = lifecycle.track_signals(conversation, message)
+    match conversation["status"]:
+        case Status.BOT_ACTIVE:
+            conversation["botTurn"] = {"messageId": message["id"], "startedAt": now}
+            return {"kind": "bot", "message": message, "sentiment": sentiment}
+        case Status.AGENT_ACTIVE:
+            return {"kind": "copilot", "message": message}
+        case Status.HANDOFF_PENDING:
+            lifecycle.note_while_waiting(conversation, message, sentiment, now)
+    return None
+
+
+async def receive_customer_message(conversation_id: str, customer: dict, text: str) -> dict:
+    """A customer message: record it, then let the bot answer (or draft for the agent) without holding the
+    conversation locked during the LLM call. Returns the conversation as saved."""
+    while True:
+        head = await store.get_own(conversation_id, customer)
+        if not _turn_in_progress(head, now_ms()):
+            break
+        await asyncio.sleep(TURN_WAIT_S)  # the bot is still answering this customer's previous message
+
+    with _traced(head, "customer-message"), observe("customer-message", input=text) as span:
+        work = None
+        while work is None:
+            async with store.own_transaction(conversation_id, customer) as conversation:
+                now = now_ms()
+                if _turn_in_progress(conversation, now):
+                    work = "wait"  # another message claimed the turn between our check and the lock
+                else:
+                    _remember_trace(conversation)
+                    work = accept_customer_message(conversation, text, now) or {"kind": "none"}
+            if work == "wait":
+                work = None
+                await asyncio.sleep(TURN_WAIT_S)
+
+        if work["kind"] == "bot":
+            conversation = await _bot_turn_unlocked(conversation_id, customer, conversation, work, now)
+        elif work["kind"] == "copilot":
+            draft = await draft_copilot(copy.deepcopy(conversation), text)
+            conversation = await _save_copilot(conversation_id, conversation, draft, for_message=work["message"]["id"]) or conversation
+
+        last = next((m for m in reversed(conversation["messages"]) if m["sender"] != Sender.CUSTOMER), None)
+        span.update(output=last["text"] if last else None, metadata={"status": conversation["status"]})
         return conversation
 
 
-async def accept_handoff(conversation: dict, agent: dict, now: int) -> dict:
-    with _traced(conversation, "accept-handoff"), observe("accept-handoff"):
-        _remember_trace(conversation)
-        lifecycle.accept_handoff(conversation, agent, now)
-        handoff = conversation["handoff"]
-        handoff_wait.labels(**label(priority=handoff["priority"])).observe((now - handoff["requestedAt"]) / 1000)
-        conversation["copilot"] = await draft_copilot(conversation, lifecycle.last_open_question(conversation))
-        return conversation
+async def _bot_turn_unlocked(conversation_id: str, customer: dict, claimed: dict, work: dict, now: int) -> dict:
+    """Steps 2 and 3 of a bot turn: run it on a copy, then save it if the turn is still ours."""
+    snapshot = copy.deepcopy(claimed)
+    message_id = work["message"]["id"]
+    finished = False
+    try:
+        await bot_turn(snapshot, work["message"], work["sentiment"], now)
+        finished = True
+    finally:
+        async with store.own_transaction(conversation_id, customer) as fresh:
+            ours = (fresh.get("botTurn") or {}).get("messageId") == message_id
+            unchanged = ours and fresh["status"] == Status.BOT_ACTIVE and len(fresh["messages"]) == len(claimed["messages"])
+            if unchanged and finished:  # the turn finished on the copy: it becomes the saved state
+                seen = max(fresh["customerSeenAt"] or 0, snapshot["customerSeenAt"] or 0)
+                fresh.clear()
+                fresh.update(snapshot, botTurn=None, customerSeenAt=seen)
+            elif ours:
+                if fresh["status"] == Status.BOT_ACTIVE:
+                    log.warning("bot turn for %s could not be applied; releasing it", conversation_id)
+                fresh["botTurn"] = None  # an agent took over or the chat closed meanwhile: the bot's reply is dropped
+    return fresh
 
 
-async def take_over(conversation: dict, agent: dict, now: int) -> dict:
-    with _traced(conversation, "take-over"), observe("take-over"):
-        _remember_trace(conversation)
-        lifecycle.take_over(conversation, agent, now)
-        handoffs.labels(**label(reason=HandoffReason.AGENT_INITIATED, priority=conversation["handoff"]["priority"])).inc()
-        conversation["copilot"] = await draft_copilot(conversation, lifecycle.last_open_question(conversation))
-        return conversation
+async def _save_copilot(conversation_id: str, conversation: dict, draft: dict | None, *, for_message: str | None = None) -> dict | None:
+    """Step 3 of a copilot draft: attach it if the agent is still on the conversation and nothing newer was asked."""
+    if not draft:
+        return None
+    async with store.transaction(conversation_id) as fresh:
+        last_question = next((m["id"] for m in reversed(fresh["messages"]) if m["sender"] == Sender.CUSTOMER), None)
+        expected = for_message or next((m["id"] for m in reversed(conversation["messages"]) if m["sender"] == Sender.CUSTOMER), None)
+        same_agent = (fresh["assignee"] or {}).get("id") == (conversation["assignee"] or {}).get("id")
+        if fresh["status"] == Status.AGENT_ACTIVE and same_agent and last_question == expected:
+            fresh["copilot"] = draft
+            _remember_trace(fresh)
+    return fresh
+
+
+async def _with_first_draft(conversation_id: str, conversation: dict) -> dict:
+    """After an agent joins: draft a reply to the open question, outside the lock."""
+    with _traced(conversation, "copilot-draft"):
+        draft = await draft_copilot(copy.deepcopy(conversation), lifecycle.last_open_question(conversation))
+        return await _save_copilot(conversation_id, conversation, draft) or conversation
+
+
+async def accept_handoff(conversation_id: str, agent: dict) -> dict:
+    async with store.transaction(conversation_id) as conversation:
+        with _traced(conversation, "accept-handoff"), observe("accept-handoff"):
+            _remember_trace(conversation)
+            now = now_ms()
+            lifecycle.accept_handoff(conversation, agent, now)
+            handoff = conversation["handoff"]
+            handoff_wait.labels(**label(priority=handoff["priority"])).observe((now - handoff["requestedAt"]) / 1000)
+    return await _with_first_draft(conversation_id, conversation)
+
+
+async def take_over(conversation_id: str, agent: dict) -> dict:
+    async with store.transaction(conversation_id) as conversation:
+        with _traced(conversation, "take-over"), observe("take-over"):
+            _remember_trace(conversation)
+            lifecycle.take_over(conversation, agent, now_ms())
+            handoffs.labels(**label(reason=HandoffReason.AGENT_INITIATED, priority=conversation["handoff"]["priority"])).inc()
+    return await _with_first_draft(conversation_id, conversation)
 
 
 def _words(text: str) -> set[str]:

@@ -31,6 +31,7 @@ export const SYSTEM_EVENT = Object.freeze({
   RETURNED_TO_BOT: 'returned_to_bot',
   RESOLVED: 'resolved',
   REOPENED: 'reopened',
+  PRIORITY_RAISED: 'priority_raised', // agents only: something added while waiting made it more urgent
 });
 
 // Why a conversation (a support session) ended. Closed conversations never reopen: the customer

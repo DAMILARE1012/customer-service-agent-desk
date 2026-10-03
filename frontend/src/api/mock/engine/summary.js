@@ -21,6 +21,7 @@ export function toSummary(conversation) {
       priority: handoff.priority,
       requestedAt: handoff.requestedAt,
       acceptedAt: handoff.acceptedAt,
+      addedWhileWaiting: handoff.addedWhileWaiting?.length ?? 0,
     },
     sentiment: insights.sentiment.current,
     lastConfidence: insights.lastConfidence,

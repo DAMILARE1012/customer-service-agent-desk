@@ -69,7 +69,7 @@ def test_migrates_a_v1_database_of_documents():
 
     run(check())
     with psycopg.connect(URL) as conn:
-        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4]
+        assert [r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5]
         assert conn.execute("SELECT count(*) FROM conversation_events WHERE conversation_id = %s", (legacy["id"],)).fetchone()[0] == 1
 
 
@@ -84,7 +84,7 @@ def test_transactions_serialise_changes_to_one_conversation():
 
             async def append(text, delay):
                 async with repo.transaction(c["id"]) as locked:
-                    await asyncio.sleep(delay)  # e.g. waiting for the LLM, lock held
+                    await asyncio.sleep(delay)  # slow work while locked
                     lifecycle.add_message(locked, {"sender": "customer", "text": text, "createdAt": 2_000})
 
             await asyncio.gather(append("first", 0.3), append("second", 0))
@@ -96,6 +96,13 @@ def test_transactions_serialise_changes_to_one_conversation():
                     lifecycle.add_message(locked, {"sender": "customer", "text": "rolled back", "createdAt": 3_000})
                     raise RuntimeError("boom")
             assert len((await repo.get_conversation(c["id"]))["messages"]) == 2
+
+            async with repo.transaction(c["id"]) as locked:  # a bot turn's claim round-trips
+                locked["botTurn"] = {"messageId": "msg_1", "startedAt": 4_000}
+            assert (await repo.get_conversation(c["id"]))["botTurn"] == {"messageId": "msg_1", "startedAt": 4_000}
+            async with repo.transaction(c["id"]) as locked:
+                locked["botTurn"] = None
+            assert (await repo.get_conversation(c["id"]))["botTurn"] is None
 
             async with repo.transaction("conv_missing") as missing:
                 assert missing is None
