@@ -1,20 +1,23 @@
 #!/bin/sh
-# One-shot setup for the local Vault, run by the vault-init service on every `infra:up`. Safe to repeat:
+# One-shot setup for the local Vault — the first thing to run after Vault itself; everything else waits
+# for it (see infra/docker-compose.yml). Safe to repeat on every `infra:up`:
 #
 #   1. initialise Vault the first time (1 unseal key — local only; production uses KMS auto-unseal)
 #   2. unseal it (Vault starts sealed after every restart)
-#   3. enable a KV v2 secrets engine at secret/, the baton-api policy and an AppRole login for the API
-#   4. the first time (or with VAULT_SEED=force), copy the API's secrets from .env into secret/baton/api
+#   3. enable KV v2 at secret/, a policy and an AppRole per consumer: baton-api (the API) and
+#      baton-infra (Vault Agent, which hands Postgres and Keycloak their passwords)
+#   4. the first time a path is missing, fill it: from .env if a value is there, otherwise — for secrets
+#      nobody needs to choose — a strong random value. With VAULT_SEED=force, values found in .env are
+#      merged into what Vault already holds (nothing is regenerated, so the database password can't change).
 #
-# Writes to /vault/local (= infra/vault/local, git-ignored): init.txt (unseal key + root token) and the
-# API's AppRole credentials (role_id, secret_id). Treat that folder like .env.
+# Writes to /vault/local (= infra/vault/local, git-ignored): init.txt (unseal key + root token) and each
+# consumer's AppRole credentials. Treat that folder like a password manager's vault file.
 set -eu
 export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
 OUT=/vault/local
-SECRETS="GROQ_API_KEY WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET KEYCLOAK_ADMIN_CLIENT_SECRET LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY SMTP_PASSWORD ALERT_WEBHOOK_URL"
 umask 077
 mkdir -p "$OUT"
-chmod 755 "$OUT" # the API container reads role_id / secret_id; init.txt itself stays 600
+chmod 755 "$OUT" # containers read their AppRole files; init.txt itself stays 600
 
 echo "vault-init: waiting for $VAULT_ADDR"
 while :; do
@@ -27,7 +30,7 @@ set +e; vault operator init -status >/dev/null 2>&1; initialised=$?; set -e
 if [ "$initialised" -eq 2 ]; then
   echo "vault-init: first start — initialising"
   vault operator init -key-shares=1 -key-threshold=1 > "$OUT/init.txt"
-  rm -f "$OUT/secret_id" # a fresh Vault means fresh AppRole credentials
+  rm -f "$OUT"/*_secret_id "$OUT/secret_id" # a fresh Vault means fresh AppRole credentials
 elif [ ! -s "$OUT/init.txt" ]; then
   echo "vault-init: Vault is initialised but $OUT/init.txt is missing — can't unseal." >&2
   echo "            Restore that file, or start over: npm run infra:down -- -v (deletes ALL local data)." >&2
@@ -40,25 +43,42 @@ export VAULT_TOKEN
 vault operator unseal "$UNSEAL_KEY" >/dev/null
 
 vault secrets list | grep -q '^secret/' || vault secrets enable -path=secret -version=2 kv >/dev/null
-vault policy write baton-api /vault/policies/baton-api.hcl >/dev/null
 vault auth list | grep -q '^approle/' || vault auth enable approle >/dev/null
-# Short-lived tokens; the secret_id itself doesn't expire here (rotate it with: vault write -f auth/approle/role/baton-api/secret-id).
-vault write auth/approle/role/baton-api token_policies=baton-api token_ttl=1h token_max_ttl=4h secret_id_ttl=0 >/dev/null
-vault read -field=role_id auth/approle/role/baton-api/role-id > "$OUT/role_id"
-[ -s "$OUT/secret_id" ] || vault write -f -field=secret_id auth/approle/role/baton-api/secret-id > "$OUT/secret_id"
-chmod 644 "$OUT/role_id" "$OUT/secret_id" # read by the API container's non-root user (the folder stays git-ignored)
 
-if [ "${VAULT_SEED:-}" = "force" ] || ! vault kv get secret/baton/api >/dev/null 2>&1; then
+# One policy + AppRole per consumer. Short-lived tokens; secret_ids don't expire here
+# (rotate one with: vault write -f auth/approle/role/<role>/secret-id).
+approle() { # approle <role> <file prefix>
+  vault policy write "$1" "/vault/policies/$1.hcl" >/dev/null
+  vault write "auth/approle/role/$1" token_policies="$1" token_ttl=1h token_max_ttl=4h secret_id_ttl=0 >/dev/null
+  vault read -field=role_id "auth/approle/role/$1/role-id" > "$OUT/$2role_id"
+  [ -s "$OUT/$2secret_id" ] || vault write -f -field=secret_id "auth/approle/role/$1/secret-id" > "$OUT/$2secret_id"
+  chmod 644 "$OUT/$2role_id" "$OUT/$2secret_id"
+}
+approle baton-api ""
+approle baton-infra "infra_"
+
+random() { head -c 48 /dev/urandom | base64 | tr -d '+/=\n' | cut -c1-32; }
+
+# seed <path> "<keys>" "<keys that may be generated>"
+seed() {
+  path="secret/baton/$1" keys="$2" generate=" $3 " # copied first: `set --` below reuses the positional parameters
+  if vault kv get "$path" >/dev/null 2>&1; then exists=1; else exists=0; fi
+  [ "$exists" -eq 1 ] && [ "${VAULT_SEED:-}" != "force" ] && return 0
   set --
-  for name in $SECRETS; do
+  for name in $keys; do
     eval "value=\${$name:-}"
-    if [ -n "$value" ] && [ "$value" != "change-me" ]; then set -- "$@" "$name=$value"; fi
+    [ "$value" = "change-me" ] && value=""
+    if [ -z "$value" ] && [ "$exists" -eq 0 ] && echo "$generate" | grep -q " $name "; then value=$(random); fi
+    if [ -n "$value" ]; then set -- "$@" "$name=$value"; fi
   done
-  if [ "$#" -gt 0 ]; then
-    vault kv put secret/baton/api "$@" >/dev/null
-    echo "vault-init: stored $# secret(s) from .env in secret/baton/api (names only: $(for a in "$@"; do printf '%s ' "${a%%=*}"; done))"
-  else
-    echo "vault-init: no secrets in .env to store yet — add them in the UI (http://localhost:8200) or set them in .env and run npm run vault:seed"
-  fi
-fi
+  [ "$#" -eq 0 ] && { echo "vault-init: nothing to store in $path yet"; return 0; }
+  if [ "$exists" -eq 1 ]; then vault kv patch "$path" "$@" >/dev/null; else vault kv put "$path" "$@" >/dev/null; fi
+  echo "vault-init: $path ← $(for a in "$@"; do printf '%s ' "${a%%=*}"; done)(names only)"
+}
+
+seed database "BATON_DB_PASSWORD" "BATON_DB_PASSWORD"
+seed keycloak "KEYCLOAK_DB_PASSWORD KEYCLOAK_ADMIN_PASSWORD BATON_DEMO_PASSWORD" "KEYCLOAK_DB_PASSWORD KEYCLOAK_ADMIN_PASSWORD BATON_DEMO_PASSWORD"
+seed keycloak-client "KEYCLOAK_ADMIN_CLIENT_SECRET" "KEYCLOAK_ADMIN_CLIENT_SECRET"
+seed api "GROQ_API_KEY WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY SMTP_PASSWORD ALERT_WEBHOOK_URL" "WIDGET_SIGNING_SECRET WIDGET_IDENTITY_SECRET"
+
 echo "vault-init: ready (UI http://localhost:8200 — root token in infra/vault/local/init.txt)"

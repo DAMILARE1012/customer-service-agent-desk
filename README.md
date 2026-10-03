@@ -91,7 +91,7 @@ npm run dev                       # http://localhost:5173 → be Alex or Jade, o
 
 **Full stack.** Needs Node 20+, Python 3.12+ with [uv](https://docs.astral.sh/uv/), Docker Desktop and a [Groq API key](https://console.groq.com/keys).
 
-1. `cp .env.example .env` and replace every `change-me` (the file explains each setting). Set `GROQ_API_KEY`, `VITE_API_URL=http://localhost:8787` and `VITE_KEYCLOAK_URL=http://localhost:8080`.
+1. `cp .env.example .env`; set `GROQ_API_KEY`, `VITE_API_URL=http://localhost:8787` and `VITE_KEYCLOAK_URL=http://localhost:8080` (the file explains every setting). Leave the other secrets empty: the first `infra:up` generates them in Vault — then empty `GROQ_API_KEY` too, since it’s in Vault by then.
 2. `npm run infra:up` — Postgres (:5433), Keycloak (:8080), Vault (:8200) and Mailpit (:8025). The first start imports the realm (staff roles and demo staff) and puts the API’s secrets from `.env` into Vault.
 3. `cd backend && uv sync && cd ..` then `npm run ingest` — the first build downloads the data and embeds ~24,000 chunks on the CPU (about an hour, resumable).
 4. `npm run api` and `npm run dev` in two terminals. Chat as a customer at http://localhost:5173/demo-store; sign in to the staff app at http://localhost:5173 (see [Accounts](#accounts)).
@@ -141,20 +141,20 @@ The secret never reaches the browser. The demo store at `/demo-store` plays the 
 
 ## Accounts
 
-All passwords live in **one block at the top of `.env`**. Run `npm run accounts` to print them with their URLs.
+Run `npm run accounts` to print every login with its URL: passwords marked (Vault) are read from Vault, the rest from `.env`.
 
-| Who | Where | Username | Password (in `.env`) |
+| Who | Where | Username | Password |
 |---|---|---|---|
 | Customers | http://localhost:5173/demo-store | none — guests chat anonymously; the demo bar “signs in” to the shop as a seeded customer | — |
-| Agents | http://localhost:5173 (staff app) | `alex.rivera`, `priya.shah` | `BATON_DEMO_PASSWORD` |
-| Admin | http://localhost:5173 (staff app) | `jade.kim` (admin and agent) | `BATON_DEMO_PASSWORD` |
-| Keycloak admin console | http://localhost:8080/admin | `KEYCLOAK_ADMIN_USER` (default `admin`) | `KEYCLOAK_ADMIN_PASSWORD` |
+| Agents | http://localhost:5173 (staff app) | `alex.rivera`, `priya.shah` | `BATON_DEMO_PASSWORD` (Vault) |
+| Admin | http://localhost:5173 (staff app) | `jade.kim` (admin and agent) | `BATON_DEMO_PASSWORD` (Vault) |
+| Keycloak admin console | http://localhost:8080/admin | `KEYCLOAK_ADMIN_USER` (default `admin`) | `KEYCLOAK_ADMIN_PASSWORD` (Vault) |
 | Langfuse | http://localhost:3000 | `LANGFUSE_INIT_USER_EMAIL` | `LANGFUSE_INIT_USER_PASSWORD` |
 | Grafana | http://localhost:3001 | `GRAFANA_ADMIN_USER` | `GRAFANA_ADMIN_PASSWORD` |
 | Mailpit (every email the app sends) | http://localhost:8025 | none | — |
 | Vault (the API’s secrets) | http://localhost:8200 | method: Token | root token in `infra/vault/local/init.txt` |
 
-Keycloak holds staff only: add agents in its admin console and give them the `agent` role. The demo password applies when Keycloak first imports the realm; afterwards, change passwords there.
+Keycloak holds staff only: add agents in its admin console and give them the `agent` role. The demo password (generated in Vault on first start) applies when Keycloak first imports the realm; afterwards, change passwords there.
 
 ## Deploying
 
@@ -165,7 +165,22 @@ Two images, configured only by environment variables (nothing secret is baked in
 | `baton-api` | `backend/Dockerfile` | Python 3.12 slim, CPU-only PyTorch, runs as a non-root user. Mount `/app/data` (index + models) and `/app/content` (articles). `API_WORKERS` sets processes; the app is built to run as several. |
 | `baton-web` | `frontend/Dockerfile` | nginx (unprivileged). `VITE_*` settings are read **when the container starts**, so one image serves anyone’s URLs. `WIDGET_FRAME_ANCESTORS` lists the sites allowed to embed the chat widget; the staff app can’t be framed. |
 
-**Secrets: HashiCorp Vault.** The API’s secrets (Groq key, widget secrets, Keycloak service-account secret, Langfuse keys, SMTP password, webhook URL) live in Vault at `secret/baton/api`. At startup the API logs in with **AppRole** under a policy that can read that one path and nothing else, and it refuses to start if Vault is configured but unreachable. `npm run infra:up` runs Vault as a real server (not `-dev` mode); a one-shot `vault-init` container initialises and unseals it, sets up the policy and AppRole, and the first time copies the secrets from `.env` (`npm run vault:seed` re-copies them). Locally the unseal key and root token sit in `infra/vault/local/` (git-ignored) — treat that folder like `.env`. In production, use KMS auto-unseal (the `seal "awskms"` stanza in `infra/vault/config/vault.hcl`), raft storage across three nodes, TLS, and the AWS IAM auth method instead of a secret_id on disk. Infrastructure passwords (Postgres, Keycloak) stay with Docker/RDS because those start before Vault. Without `VAULT_ADDR`, the API simply reads environment variables.
+**Secrets: HashiCorp Vault — the root everything else depends on.** No service reads a secret from `.env`; Vault is started first and the rest wait for it:
+
+```
+vault ─▶ vault-init ─▶ secrets (Vault Agent) ─▶ db ─▶ keycloak ─▶ api
+  (own storage)   (unseal, policies,      (renders the Postgres      (also reads its own
+                   one AppRole each)        and Keycloak passwords)    secrets from Vault)
+```
+
+| Vault path | Holds | Read by |
+|---|---|---|
+| `secret/baton/api` | Groq key, widget secrets, Langfuse keys, SMTP password, webhook URL | API |
+| `secret/baton/database` | the app database password | Postgres (via Vault Agent), API |
+| `secret/baton/keycloak` | Keycloak’s database and admin passwords, the demo staff password | Keycloak (via Vault Agent) |
+| `secret/baton/keycloak-client` | the API’s Keycloak service-account secret — one copy, read by both sides | Keycloak, API |
+
+Vault keeps its data in its own volume, not in Postgres — otherwise Postgres would need Vault to start and Vault would need Postgres. On the first `npm run infra:up`, `vault-init` initialises and unseals Vault, creates a read-only policy and an AppRole per consumer, and fills each path from `.env` where you’ve set a value or with a strong generated one. Vault Agent (the `secrets` service, with its own role) renders the Postgres and Keycloak passwords into a Docker-only volume and exits; Postgres reads `POSTGRES_PASSWORD_FILE`, Keycloak sources its file, and the API logs in with its AppRole and **refuses to start** if Vault is configured but unreachable — once Vault is configured it never falls back to a value left in the environment. Rotating a secret is a change in Vault (plus `ALTER ROLE` for the database password) and a restart. Locally the unseal key and root token sit in `infra/vault/local/` (git-ignored; set `VAULT_LOCAL_DIR` to move it) — back it up: without it Vault can’t be unsealed. In production: KMS auto-unseal (the `seal "awskms"` stanza in `infra/vault/config/vault.hcl`), raft storage on three nodes, TLS, and the AWS IAM auth method instead of secret_ids on disk. Without `VAULT_ADDR`, the API reads environment variables as before. The optional observability stack (Langfuse, Grafana) keeps its own bootstrap passwords in `.env` for now.
 
 **A sensible AWS shape.** A public subnet with the load balancer (HTTPS via ACM) and the NAT gateway; private subnets for the API and web containers (ECS Fargate or EC2), Keycloak, Vault, and Postgres (RDS). Then tighten for production: `CORS_ORIGIN` and `BATON_WEB_URL` to your domain, `WIDGET_FRAME_ANCESTORS` to your shop’s domains, `WIDGET_DEMO_IDENTITY=false`, Keycloak in production mode (`start`, behind TLS), and `SMTP_*` pointing at a real provider (for example Amazon SES).
 
@@ -212,7 +227,7 @@ docs/           architecture diagram (draw.io) and screenshots
 scripts/        accounts.mjs (npm run accounts)
 ```
 
-`npm test` runs 119 backend tests with no network or keys; 7 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
+`npm test` runs 120 backend tests with no network or keys; 7 more test the Postgres repository against a disposable database (see the top of `backend/tests/test_postgres.py`).
 
 ## Limitations
 

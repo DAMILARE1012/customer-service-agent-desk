@@ -1,18 +1,22 @@
-"""The API's secrets from HashiCorp Vault (optional).
+"""The API's secrets from HashiCorp Vault — the API depends on Vault, not the other way round.
 
 With VAULT_ADDR set, the API logs in at startup — AppRole (VAULT_ROLE_ID / VAULT_SECRET_ID, or the *_FILE
-variants), or a token (VAULT_TOKEN) — reads the KV v2 secret VAULT_SECRET_PATH (default secret/baton/api)
-and uses its values over anything in the environment. Without VAULT_ADDR, secrets come from environment
-variables as before.
+variants), or a token (VAULT_TOKEN) — and reads the KV v2 secrets in VAULT_SECRET_PATHS:
 
-Only the names in SECRETS are read; anything else in the secret is ignored. Values are never logged.
-If Vault is configured but can't be reached or refuses access, startup fails: running without the
-secrets would only fail later and less clearly. Values are read once; restart the API after rotating one.
+    secret/baton/api              its own secrets (Groq key, widget secrets, Langfuse keys, SMTP, webhook)
+    secret/baton/database         the database password, added to DATABASE_URL
+    secret/baton/keycloak-client  the Keycloak service-account secret (Keycloak reads the same one)
+
+Strict: with Vault configured, every name in SECRETS comes from Vault only. A value left in the
+environment is ignored (with a warning), so a secret missing from Vault shows up as missing instead of
+quietly working from a stale copy. If Vault can't be reached or refuses access, startup fails. Values
+are read once (restart after rotating one) and never logged. Without VAULT_ADDR, the environment is used.
 """
 
 import logging
 import time
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -31,6 +35,7 @@ SECRETS = {
     "SMTP_PASSWORD": "smtp_password",
     "ALERT_WEBHOOK_URL": "alert_webhook_url",
 }
+DATABASE_PASSWORD = "BATON_DB_PASSWORD"  # goes into DATABASE_URL rather than a setting of its own
 
 source = "environment"  # reported by /health: "environment" or "vault"
 
@@ -64,15 +69,26 @@ def _token(client: httpx.Client) -> str:
     return response.json()["auth"]["client_token"]
 
 
-def _read(client: httpx.Client) -> dict:
-    token = _token(client)
-    mount, _, path = settings.vault_secret_path.partition("/")
+def _read(client: httpx.Client, token: str, secret_path: str) -> dict:
+    mount, _, path = secret_path.partition("/")
     response = client.get(f"/v1/{mount}/data/{path}", headers={"X-Vault-Token": token})
     if response.status_code == 404:
-        raise VaultError(f"No secret at {settings.vault_secret_path} — run npm run vault:seed, or add it in the Vault UI.")
+        raise VaultError(f"No secret at {secret_path} — run npm run infra:up (vault-init fills it), or add it in the Vault UI.")
     if response.status_code != 200:
-        raise VaultError(f"Vault refused to read {settings.vault_secret_path} ({response.status_code}).")
+        raise VaultError(f"Vault refused to read {secret_path} ({response.status_code}).")
     return response.json()["data"]["data"]
+
+
+def _paths() -> list[str]:
+    return [p.strip() for p in settings.vault_secret_paths.split(",") if p.strip()]
+
+
+def _with_password(url: str, password: str) -> str:
+    parts = urlsplit(url)
+    user = parts.username or ""
+    host = parts.hostname or ""
+    netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{host}" + (f":{parts.port}" if parts.port else "")
+    return urlunsplit(parts._replace(netloc=netloc))
 
 
 def load(*, attempts: int = 10, transport: httpx.BaseTransport | None = None) -> list[str]:
@@ -84,16 +100,31 @@ def load(*, attempts: int = 10, transport: httpx.BaseTransport | None = None) ->
     for attempt in range(attempts):
         try:
             with httpx.Client(base_url=settings.vault_addr.rstrip("/"), timeout=5, transport=transport) as client:
-                values = _read(client)
+                token = _token(client)
+                values: dict = {}
+                for path in _paths():
+                    values.update(_read(client, token, path))
             break
         except httpx.HTTPError as error:  # Vault may still be starting or unsealing
             last = error
             time.sleep(min(2.0, 0.25 * 2**attempt))
     else:
         raise VaultError(f"Can't reach Vault at {settings.vault_addr}: {last}")
-    applied = [name for name in SECRETS if values.get(name)]
-    for name in applied:
-        setattr(settings, SECRETS[name], values[name])
+
+    applied, ignored = [], []
+    for name, attribute in SECRETS.items():
+        if values.get(name):
+            setattr(settings, attribute, values[name])
+            applied.append(name)
+        else:
+            if getattr(settings, attribute):
+                ignored.append(name)
+            setattr(settings, attribute, "")  # strict: Vault is the only source once it's configured
+    if values.get(DATABASE_PASSWORD) and settings.database_url:
+        settings.database_url = _with_password(settings.database_url, values[DATABASE_PASSWORD])
+        applied.append(DATABASE_PASSWORD)
     source = "vault"
-    log.info("secrets from Vault (%s): %s", settings.vault_secret_path, ", ".join(applied) or "none")
+    log.info("secrets from Vault (%s): %s", ", ".join(_paths()), ", ".join(applied) or "none")
+    if ignored:
+        log.warning("ignored %s from the environment: with Vault configured, add them to Vault instead", ", ".join(ignored))
     return applied

@@ -1,82 +1,36 @@
-# Baton's infrastructure — the app database and Keycloak (staff sign-in) — and, with the "app" profile,
-# Baton itself as containers (API + web).
+# Baton's infrastructure — Vault (secrets), Postgres, Keycloak (staff sign-in), Mailpit — and, with the
+# "app" profile, Baton itself as containers (API + web).
 #
-#   npm run infra:up      database + Keycloak only (run the API and web app from source: npm run api / dev)
-#   npm run app:up        everything in Docker: database, Keycloak, API, web   → http://localhost:5173
+#   npm run infra:up      the infrastructure (run the API and web app from source: npm run api / dev)
+#   npm run app:up        everything in Docker, incl. API and web            → http://localhost:5173
 #   npm run app:ingest    build the knowledge index into the data volume (first run: about an hour on a CPU)
+#   npm run vault:seed    copy secrets you've put in .env into Vault (merged; nothing is regenerated)
 #   npm run infra:down    stop (data is kept in the Docker volumes)
 #
-# Keycloak  http://localhost:8080   admin console login: KEYCLOAK_ADMIN_USER / KEYCLOAK_ADMIN_PASSWORD
+# Start-up order — Vault is the root of trust, so everything that needs a secret waits for it:
+#
+#   vault ─▶ vault-init ─▶ secrets (Vault Agent) ─▶ db ─▶ keycloak ─▶ api
+#                     └──────────────────────────────────────────────▶ api   (reads its own secrets)
+#   mailpit, web: no dependencies (the browser, not nginx, talks to the API and Keycloak)
+#
+# Vault keeps its data in its own volume (not in Postgres), so there's no cycle: Postgres can get its
+# password from Vault. Where to find things:
+#
+# Vault     http://localhost:8200   root token: infra/vault/local/init.txt — keep that folder private
+# Keycloak  http://localhost:8080   admin console: KEYCLOAK_ADMIN_USER / password in Vault (npm run accounts)
 # Postgres  localhost:5433          database "baton" (app) and "keycloak" (identity), one server
 # Mailpit   http://localhost:8025   catches the app's emails (alerts, replies to customers who left)
-# Vault     http://localhost:8200   the API's secrets (root token: infra/vault/local/init.txt — keep it private)
 #
 # The realm in keycloak/import/ is imported on the FIRST start only. To re-import after editing it,
 # delete the data: `docker compose --env-file .env -f infra/docker-compose.yml down -v` (destroys users,
-# conversations and settings).
+# conversations, settings — and Vault's secrets).
 
 name: baton
 
 services:
-  db:
-    image: docker.io/postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: baton
-      POSTGRES_PASSWORD: ${BATON_DB_PASSWORD:?set in .env}
-      POSTGRES_DB: baton
-      # Read by postgres/init/01-keycloak.sh to create Keycloak's own database and user.
-      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in .env}
-      TZ: UTC
-      PGTZ: UTC
-    ports:
-      - 127.0.0.1:${BATON_DB_PORT:-5433}:5432
-    volumes:
-      - db_data:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U baton -d baton']
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.8.0
-    restart: unless-stopped
-    # start-dev: HTTP, no theme caching — fine on localhost. Use `start` with TLS in production.
-    command: start-dev --import-realm
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in .env}
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
-      # Fixed public URL, so token issuers match what the browser and the API both see.
-      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
-      KC_HEALTH_ENABLED: 'true'
-      # Placeholders in keycloak/import/baton-realm.json
-      BATON_WEB_URL: ${BATON_WEB_URL:-http://localhost:5173}
-      BATON_DEMO_PASSWORD: ${BATON_DEMO_PASSWORD:?set in .env}
-      BATON_API_ADMIN_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:?set in .env}
-    ports:
-      - 127.0.0.1:${KEYCLOAK_PORT:-8080}:8080
-    volumes:
-      - ./keycloak/import:/opt/keycloak/data/import:ro
-    healthcheck:
-      # The image has no curl; ask the management port with bash's /dev/tcp.
-      test: ['CMD-SHELL', "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 20s
-
-  # The API's secrets (Groq key, widget secrets, …). A real server with on-disk storage, not -dev mode;
-  # vault-init unseals it and sets it up on every start. Infra passwords (database, Keycloak) stay in .env:
-  # Docker needs them to start those services before Vault is up.
+  # ── 1. Secrets ────────────────────────────────────────────────────────────────────────────────
+  # A real server with on-disk storage (not -dev mode). Production: raft storage on three nodes, TLS,
+  # KMS auto-unseal — see vault/config/vault.hcl.
   vault:
     image: docker.io/hashicorp/vault:1.20
     restart: unless-stopped
@@ -95,22 +49,93 @@ services:
       timeout: 3s
       retries: 20
 
+  # Unseals Vault and sets it up (policies, an AppRole per consumer). The first time, it fills Vault —
+  # from .env where you've set a value, otherwise with generated passwords. See vault/init.sh.
   vault-init:
     image: docker.io/hashicorp/vault:1.20
     depends_on:
       vault: { condition: service_healthy }
     entrypoint: ["sh", "/vault/init.sh"]
-    env_file: ../.env  # the first time, the API's secrets are copied from here into Vault
+    env_file: ../.env
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_SEED: ${VAULT_SEED:-}
     volumes:
       - ./vault/init.sh:/vault/init.sh:ro
       - ./vault/policies:/vault/policies:ro
-      - ./vault/local:/vault/local  # init.txt (unseal key + root token) and the API's AppRole credentials
+      - ${VAULT_LOCAL_DIR:-./vault/local}:/vault/local  # init.txt (unseal key + root token) and each consumer's AppRole files
+
+  # Vault Agent with the read-only "baton-infra" role: renders the Postgres and Keycloak passwords into
+  # the infra_secrets volume, then exits. Postgres and Keycloak start only after it succeeded.
+  secrets:
+    image: docker.io/hashicorp/vault:1.20
+    depends_on:
+      vault-init: { condition: service_completed_successfully }
+    entrypoint: ["vault", "agent", "-config=/vault/agent/infra.hcl"]
+    volumes:
+      - ./vault/agent:/vault/agent:ro
+      - ${VAULT_LOCAL_DIR:-./vault/local}:/vault/local:ro
+      - infra_secrets:/run/baton-secrets
+
+  # ── 2. Data and identity ──────────────────────────────────────────────────────────────────────
+  db:
+    image: docker.io/postgres:17
+    restart: unless-stopped
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    environment:
+      POSTGRES_USER: baton
+      POSTGRES_PASSWORD_FILE: /run/baton-secrets/db_password            # from Vault
+      POSTGRES_DB: baton
+      KEYCLOAK_DB_PASSWORD_FILE: /run/baton-secrets/keycloak_db_password # read by postgres/init/01-keycloak.sh
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - 127.0.0.1:${BATON_DB_PORT:-5433}:5432
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - infra_secrets:/run/baton-secrets:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U baton -d baton']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+      secrets: { condition: service_completed_successfully }
+    # Its passwords come from Vault (keycloak.env, rendered by the secrets service). start-dev: HTTP, no
+    # theme caching — fine on localhost; use `start` with TLS in production.
+    entrypoint: ["/bin/bash", "-c", "set -a && . /run/baton-secrets/keycloak.env && set +a && exec /opt/keycloak/bin/kc.sh start-dev --import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      # Fixed public URL, so token issuers match what the browser and the API both see.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
+      KC_HEALTH_ENABLED: 'true'
+      BATON_WEB_URL: ${BATON_WEB_URL:-http://localhost:5173}  # placeholder in keycloak/import/baton-realm.json
+    ports:
+      - 127.0.0.1:${KEYCLOAK_PORT:-8080}:8080
+    volumes:
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+      - infra_secrets:/run/baton-secrets:ro
+    healthcheck:
+      # The image has no curl; ask the management port with bash's /dev/tcp.
+      test: ['CMD-SHELL', "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
 
   # Catches every email the app sends (alerts to agents, replies to customers) in a web inbox — nothing
-  # leaves your machine. Point SMTP_* at a real provider in production.
+  # leaves your machine. Point SMTP_* at a real provider in production. Depends on nothing; the API sends
+  # mail when it can and logs a warning when it can't, so it doesn't wait for Mailpit either.
   mailpit:
     image: docker.io/axllent/mailpit:v1.27
     restart: unless-stopped
@@ -118,19 +143,19 @@ services:
       - 127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025   # inbox: http://localhost:8025
       - 127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025 # SMTP for the API run from source
 
-  # ── Baton as containers (profile "app") ─────────────────────────────────────────────────────────
+  # ── 3. Baton as containers (profile "app") ────────────────────────────────────────────────────
   api:
     profiles: [app]
     build: { context: .., dockerfile: backend/Dockerfile }
     image: baton-api:local
     restart: unless-stopped
     depends_on:
+      vault-init: { condition: service_completed_successfully }  # its own secrets + the database password
       db: { condition: service_healthy }
       keycloak: { condition: service_healthy }
-      vault-init: { condition: service_completed_successfully }
-    env_file: ../.env  # settings; secrets come from Vault (below), which overrides any left in .env
+    env_file: ../.env  # settings only; secrets come from Vault
     environment:
-      DATABASE_URL: postgresql://baton:${BATON_DB_PASSWORD}@db:5432/baton
+      DATABASE_URL: postgresql://baton@db:5432/baton  # the password is added from Vault (secret/baton/database)
       KEYCLOAK_URL: http://localhost:${KEYCLOAK_PORT:-8080}  # what browsers see: the tokens' issuer
       KEYCLOAK_INTERNAL_URL: http://keycloak:8080            # how the API reaches Keycloak inside Docker
       CORS_ORIGIN: ${BATON_WEB_URL:-http://localhost:5173}
@@ -146,14 +171,13 @@ services:
     volumes:
       - baton_data:/app/data        # knowledge index + embedding models (npm run app:ingest)
       - baton_content:/app/content  # your help-centre articles, incl. ones published from the review queue
-      - ./vault/local:/vault/local:ro  # the API's AppRole credentials, written by vault-init
+      - ${VAULT_LOCAL_DIR:-./vault/local}:/vault/local:ro  # the API's AppRole credentials, written by vault-init
 
   web:
     profiles: [app]
     build: { context: .., dockerfile: frontend/Dockerfile }
     image: baton-web:local
     restart: unless-stopped
-    depends_on: [api]
     environment:
       # Public settings for the browser, applied at start-up (see frontend/docker/40-baton-config.sh).
       VITE_API_URL: http://localhost:${BATON_API_PORT:-8787}
@@ -165,9 +189,11 @@ services:
       - 127.0.0.1:${BATON_WEB_PORT:-5173}:8080
 
   ingest:
-    profiles: [tools]  # run on demand: npm run app:ingest
+    profiles: [tools]  # run on demand: npm run app:ingest — needs no secrets
     image: baton-api:local
     env_file: ../.env
+    environment:
+      VAULT_ADDR: ""
     command: ["baton-ingest"]
     volumes:
       - baton_data:/app/data
@@ -176,5 +202,6 @@ services:
 volumes:
   db_data:
   vault_data:
+  infra_secrets:  # passwords rendered by Vault Agent for Postgres and Keycloak (inside Docker only)
   baton_data:
   baton_content:

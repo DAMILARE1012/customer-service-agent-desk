@@ -1,5 +1,6 @@
-// npm run accounts — every login for this local stack, grouped by who uses it, with URLs and passwords
-// read from .env (nothing is stored anywhere else). Staff usernames and roles come from the Keycloak realm file;
+// npm run accounts — every login for this local stack, grouped by who uses it, with URLs and passwords:
+// from Vault for the ones that live there (read with the local root token in infra/vault/local/init.txt),
+// otherwise from .env. Staff usernames and roles come from the Keycloak realm file;
 // customers never sign in to Baton.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,7 +19,21 @@ const realm = JSON.parse(fs.readFileSync(path.join(root, 'infra/keycloak/import/
 const people = realm.users.filter((u) => !u.serviceAccountClientId);
 const withRole = (role, exclude = []) => people.filter((u) => u.realmRoles.includes(role) && !exclude.some((r) => u.realmRoles.includes(r)));
 
-const value = (key, fallback = '(not set)') => env[key] || fallback;
+// Passwords kept in Vault (see infra/vault/init.sh). Local development only: uses the root token.
+async function fromVault() {
+  const init = path.join(root, 'infra/vault/local/init.txt');
+  if (!env.VAULT_ADDR || !fs.existsSync(init)) return null;
+  const token = fs.readFileSync(init, 'utf8').match(/Initial Root Token: (\S+)/)?.[1];
+  try {
+    const res = await fetch(`${env.VAULT_ADDR}/v1/secret/data/baton/keycloak`, { headers: { 'X-Vault-Token': token } });
+    return res.ok ? (await res.json()).data.data : null;
+  } catch {
+    return null; // Vault isn't running
+  }
+}
+const vault = await fromVault();
+const value = (key, fallback = '(not set)') =>
+  env[key] || vault?.[key] || (env.VAULT_ADDR && !vault ? '(in Vault — start it with npm run infra:up)' : fallback);
 const web = env.BATON_WEB_URL || 'http://localhost:5173';
 const keycloak = env.KEYCLOAK_URL || 'http://localhost:8080';
 

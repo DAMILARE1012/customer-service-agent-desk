@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     vault_secret_id: str = ""
     vault_role_id_file: str = ""  # files written by infra/vault/init.sh; relative paths are from the project root
     vault_secret_id_file: str = ""
-    vault_secret_path: str = "secret/baton/api"  # KV v2: <mount>/<path>
+    vault_secret_paths: str = "secret/baton/api,secret/baton/database,secret/baton/keycloak-client"  # KV v2: <mount>/<path>, comma-separated
 
     # Notifications (see app/notify). Empty SMTP_HOST = emails are logged, not sent.
     baton_web_url: str = "http://localhost:5173"  # links in emails to agents
